@@ -65,6 +65,16 @@ export function drawOverlay(ctx, { width, height, calibration, statuses, tracks 
     });
   }
 
+  if (calibration?.building) {
+    const [x, y] = P(calibration.building);
+    ctx.fillStyle = "#fbbf24";
+    ctx.fillRect(x - 7, y - 7, 14, 14);
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x - 7, y - 7, 14, 14);
+    label(ctx, "BUILDING", x, y - 16, "#fbbf24", font * 0.8, "#000");
+  }
+
   ["entrance", "exit"].forEach((kind) => {
     const p = calibration?.[kind];
     if (!p) return;

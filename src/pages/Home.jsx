@@ -8,7 +8,7 @@ import { EmptyLot, EventLog, GuidanceCard, OccupancyCard, SimulationCard, Vehicl
 import useVehicleSessions from "@/hooks/useVehicleSessions";
 import { loadLocalCalibration, saveLocalCalibration } from "@/lib/lotLayout";
 import {
-  EMPTY_CALIBRATION, buildLaneGraph, deriveLot, distancesFrom, normalizeCalibration, occupancyCounts, pathLength, recommendStall,
+  EMPTY_CALIBRATION, buildLaneGraph, deriveLot, distancesFrom, normalizeCalibration, occupancyCounts, pathLength, recommendStall, stallCost,
   routeToStall, sampleCalibration,
 } from "@/lib/vision/lot";
 import { createSimulation } from "@/lib/vision/simulation";
@@ -103,13 +103,8 @@ export default function Home() {
         if (st.status === "occupied") seed.set(stallId, { vehicle_id: st.vehicle_id || undefined, color: byId.get(st.vehicle_id)?.color });
       }
     }
-    const rank = lot.entrance && graph.nodes.length
-      ? (stall) => {
-          let best = Infinity, node = -1;
-          graph.nodes.forEach((n, i) => { const d = Math.hypot(n.x - stall.front.x, n.y - stall.front.y); if (d < best) { best = d; node = i; } });
-          return (node >= 0 ? fromEntrance[node] : 0) + best;
-        }
-      : null;
+    // Guided arrivals take the same "best space" the guide recommends.
+    const rank = lot.entrance || lot.building ? (stall) => stallCost(lot, graph, stall, fromEntrance) : null;
     simRef.current = createSimulation(lot, graph, { arrivalsPerMinute: simRate, seed, rank });
     setSim({ tracks: simRef.current.tracks(), statuses: simRef.current.statuses() });
   // eslint-disable-next-line react-hooks/exhaustive-deps

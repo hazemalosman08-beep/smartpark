@@ -18,6 +18,7 @@ export const EMPTY_CALIBRATION = {
   stalls: [],
   lanes: [],
   entrance: null,
+  building: null, // where drivers walk to (building entrance), camera %
   exit: null,
   ground: null, // { quad: [4 points in camera %], width: metres, length: metres }
 };
@@ -199,12 +200,13 @@ export function deriveLot(calibration) {
   });
   const lanes = c.lanes.map((l) => ({ ...l, points: l.points.map(toLot) }));
   const entrance = c.entrance ? toLot(c.entrance) : null;
+  const building = c.building ? toLot(c.building) : null;
   const exit = c.exit ? toLot(c.exit) : null;
 
   // Bounds: the ground rectangle (grown to include anything drawn outside it).
   // Without a ground calibration the plan is cropped to what was mapped, so sky
   // and buildings in the camera picture do not take up the plan.
-  const pts = [...stalls.flatMap((s) => s.poly), ...lanes.flatMap((l) => l.points), entrance, exit].filter(Boolean)
+  const pts = [...stalls.flatMap((s) => s.poly), ...lanes.flatMap((l) => l.points), entrance, exit, building].filter(Boolean)
     .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
   const rectified = Boolean(quad?.length === 4 && c.ground.width > 0);
   let minX = 0, minY = 0, maxX = width, maxY = height;
@@ -225,7 +227,7 @@ export function deriveLot(calibration) {
   return {
     calibration: c, H, toLot, toCamera, width, height, metersPerUnit,
     bounds: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
-    stalls, lanes, entrance, exit,
+    stalls, lanes, entrance, exit, building,
     rectified,
   };
 }
@@ -429,7 +431,10 @@ function simplifyPath(points) {
 export function routeToStall(lot, graph, stall, from = lot.entrance) {
   if (!stall || !from) return [];
   const aisle = { x: stall.front.x + (stall.front.x - stall.back.x) * 0.35, y: stall.front.y + (stall.front.y - stall.back.y) * 0.35 };
-  const path = routeBetween(graph, from, aisle);
+  // Lanes drawn by hand are followed exactly; otherwise the route is planned
+  // over the open pavement between the spaces (found aisles can be incomplete).
+  const manualLanes = lot.lanes.some((l) => !l.auto);
+  const path = manualLanes ? routeBetween(graph, from, aisle) : gridRoute(lot, from, aisle, { ignore: stall.id });
   return [...path, stall.front, stall.centroid];
 }
 
@@ -457,22 +462,41 @@ export function distancesFrom(graph, from) {
   return d;
 }
 
-// Recommended free stall: the shortest drive from the entrance.
+// Driving distance from the entrance to a stall (lot units).
+export function driveDistance(lot, graph, stall, from = lot.entrance, distances = null) {
+  if (!from) return 0;
+  const table = graph.nodes.length ? distances || distancesFrom(graph, from) : null;
+  if (!table) return dist(from, stall.centroid);
+  const aisle = { x: stall.front.x + (stall.front.x - stall.back.x) * 0.35, y: stall.front.y + (stall.front.y - stall.back.y) * 0.35 };
+  const node = nearestNode(graph, aisle);
+  const viaLanes = table[node] + dist(graph.nodes[node], aisle) + dist(aisle, stall.centroid);
+  // A row the detected aisles do not reach still exists: use the straight line.
+  return Number.isFinite(viaLanes) ? viaLanes : dist(from, stall.centroid) * 1.3;
+}
+
+// Walking distance from a stall to the building (straight line, lot units).
+export const walkDistance = (lot, stall) => (lot.building ? dist(stall.centroid, lot.building) : null);
+
+// How good a stall is for a driver: with a building set, the shortest walk to
+// it wins (people care about walking more than about a few metres of driving);
+// otherwise the shortest drive from the entrance.
+export function stallCost(lot, graph, stall, distances = null) {
+  const drive = driveDistance(lot, graph, stall, lot.entrance, distances);
+  if (lot.building) return walkDistance(lot, stall) + drive * 0.1;
+  return drive;
+}
+
+// Recommended free stall.
 export function recommendStall(lot, graph, statuses, from = lot.entrance, distances = null) {
   const free = lot.stalls.filter((s) => statuses?.get(s.id)?.status !== "occupied" && !s.blocked);
   if (!free.length) return null;
-  if (!from) return free[0];
-  const table = graph.nodes.length ? distances || distancesFrom(graph, from) : null;
+  if (!from && !lot.building) return free[0];
+  const table = from && graph.nodes.length ? distances || distancesFrom(graph, from) : null;
   let best = null;
-  let bestLen = Infinity;
+  let bestCost = Infinity;
   for (const stall of free) {
-    let len;
-    if (table) {
-      const aisle = { x: stall.front.x + (stall.front.x - stall.back.x) * 0.35, y: stall.front.y + (stall.front.y - stall.back.y) * 0.35 };
-      const node = nearestNode(graph, aisle);
-      len = table[node] + dist(graph.nodes[node], aisle) + dist(aisle, stall.centroid);
-    } else len = dist(from, stall.centroid);
-    if (len < bestLen) { best = stall; bestLen = len; }
+    const cost = stallCost(lot, graph, stall, table);
+    if (cost < bestCost) { best = stall; bestCost = cost; }
   }
   return best;
 }
@@ -593,4 +617,88 @@ export function occupancyCounts(stalls = [], statuses) {
   for (const s of stalls) if (statuses?.get?.(s.id)?.status === "occupied") taken += 1;
   const total = stalls.length;
   return { total, taken, open: total - taken, percent: total ? Math.round((taken / total) * 100) : 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Route over open pavement: a grid over the lot where every parking space is
+// an obstacle, searched with A* (8 directions, turns cost extra so the route
+// keeps to straight aisles), then straightened into a few segments.
+
+function simplifyRDP(points, eps) {
+  if (points.length < 3) return points;
+  let worst = 0, index = 0;
+  const a = points[0], b = points[points.length - 1];
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const d = projectOnSegment(points[i], a, b).distance;
+    if (d > worst) { worst = d; index = i; }
+  }
+  if (worst <= eps) return [a, b];
+  return [...simplifyRDP(points.slice(0, index + 1), eps).slice(0, -1), ...simplifyRDP(points.slice(index), eps)];
+}
+
+export function gridRoute(lot, from, to, { ignore = null } = {}) {
+  if (!from || !to) return [];
+  const widths = lot.stalls.map((s) => dist(s.poly[0], s.poly[1])).filter(Number.isFinite).sort((x, y) => x - y);
+  const stallW = widths.length ? widths[Math.floor(widths.length / 2)] : lot.bounds.w / 40;
+  const cell = Math.max(stallW * 0.5, Math.max(lot.bounds.w, lot.bounds.h) / 220);
+  const b = lot.bounds;
+  const nx = Math.max(2, Math.ceil(b.w / cell)), ny = Math.max(2, Math.ceil(b.h / cell));
+  const blocked = new Uint8Array(nx * ny);
+  for (const s of lot.stalls) {
+    if (ignore && s.id === ignore) continue;
+    const xs = s.poly.map((p) => p.x), ys = s.poly.map((p) => p.y);
+    const i0 = Math.max(0, Math.floor((Math.min(...xs) - b.x) / cell)), i1 = Math.min(nx - 1, Math.floor((Math.max(...xs) - b.x) / cell));
+    const j0 = Math.max(0, Math.floor((Math.min(...ys) - b.y) / cell)), j1 = Math.min(ny - 1, Math.floor((Math.max(...ys) - b.y) / cell));
+    for (let j = j0; j <= j1; j += 1) for (let i = i0; i <= i1; i += 1) {
+      if (pointInPolygon({ x: b.x + (i + 0.5) * cell, y: b.y + (j + 0.5) * cell }, s.poly)) blocked[j * nx + i] = 1;
+    }
+  }
+  const toCell = (p) => [Math.max(0, Math.min(nx - 1, Math.floor((p.x - b.x) / cell))), Math.max(0, Math.min(ny - 1, Math.floor((p.y - b.y) / cell)))];
+  // Nearest open cell to a point.
+  const open = (p) => {
+    const [ci, cj] = toCell(p);
+    for (let r = 0; r < Math.max(nx, ny); r += 1) {
+      let best = null, bd = Infinity;
+      for (let j = cj - r; j <= cj + r; j += 1) for (let i = ci - r; i <= ci + r; i += 1) {
+        if (i < 0 || j < 0 || i >= nx || j >= ny || blocked[j * nx + i]) continue;
+        const d = (i - ci) ** 2 + (j - cj) ** 2;
+        if (d < bd) { bd = d; best = [i, j]; }
+      }
+      if (best) return best;
+    }
+    return null;
+  };
+  const s0 = open(from), g0 = open(to);
+  if (!s0 || !g0) return [from, to];
+  const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  const N = nx * ny * 8;
+  const gScore = new Float64Array(N).fill(Infinity);
+  const came = new Int32Array(N).fill(-1);
+  const heap = [];
+  const push = (f, s) => { heap.push([f, s]); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+  const pop = () => { const top = heap[0]; const last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+  const h = (i, j) => Math.hypot(i - g0[0], j - g0[1]);
+  for (let d = 0; d < 8; d += 1) { const s = (s0[1] * nx + s0[0]) * 8 + d; gScore[s] = 0; push(h(s0[0], s0[1]), s); }
+  let goal = -1;
+  let guard = 0;
+  while (heap.length && guard++ < 2e6) {
+    const [, s] = pop();
+    const c = s >> 3, d = s & 7, i = c % nx, j = (c - i) / nx;
+    if (i === g0[0] && j === g0[1]) { goal = s; break; }
+    for (let nd = 0; nd < 8; nd += 1) {
+      const ni = i + DIRS[nd][0], nj = j + DIRS[nd][1];
+      if (ni < 0 || nj < 0 || ni >= nx || nj >= ny || blocked[nj * nx + ni]) continue;
+      // No cutting a corner between two blocked cells.
+      if (DIRS[nd][0] && DIRS[nd][1] && (blocked[j * nx + ni] || blocked[nj * nx + i])) continue;
+      const turn = nd === d ? 0 : Math.min((nd - d + 8) % 8, (d - nd + 8) % 8) * 0.6;
+      // Diagonals cost a little extra: drivers follow straight aisles.
+      const cost = gScore[s] + (DIRS[nd][0] && DIRS[nd][1] ? 2.6 : 1) + turn;
+      const ns = (nj * nx + ni) * 8 + nd;
+      if (cost < gScore[ns]) { gScore[ns] = cost; came[ns] = s; push(cost + h(ni, nj), ns); }
+    }
+  }
+  if (goal < 0) return [from, to];
+  const cells = [];
+  for (let s = goal; s >= 0; s = came[s]) { const c = s >> 3; cells.unshift({ x: b.x + ((c % nx) + 0.5) * cell, y: b.y + (Math.floor(c / nx) + 0.5) * cell }); }
+  return simplifyRDP([from, ...cells, to], cell * 0.9);
 }

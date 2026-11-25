@@ -131,6 +131,7 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
       )}
 
       {lot.entrance && <Gate p={lot.entrance} text="IN" color="#4ade80" size={geometry.font} />}
+      {lot.building && <Gate p={lot.building} text="BUILDING" color="#fbbf24" size={geometry.font} />}
       {lot.exit && <Gate p={lot.exit} text="OUT" color="#f472b6" size={geometry.font} />}
 
       {/* driver guidance: glowing route, pulsing space, a car showing the way */}
@@ -228,7 +229,7 @@ function GuideLayer({ guide, geometry }) {
 function Gate({ p, text, color, size }) {
   return (
     <g transform={`translate(${p.x},${p.y})`}>
-      <rect x={-size * 1.4} y={-size * 0.6} width={size * 2.8} height={size * 1.2} rx={size * 0.3} fill="rgba(0,0,0,0.75)" stroke={color} strokeWidth={size * 0.08} />
+      <rect x={-size * Math.max(1.4, text.length * 0.3)} y={-size * 0.6} width={size * Math.max(2.8, text.length * 0.6)} height={size * 1.2} rx={size * 0.3} fill="rgba(0,0,0,0.75)" stroke={color} strokeWidth={size * 0.08} />
       <text fontSize={size * 0.8} textAnchor="middle" dominantBaseline="central" fill={color} fontWeight="800" fontFamily="ui-sans-serif, system-ui">{text}</text>
     </g>
   );

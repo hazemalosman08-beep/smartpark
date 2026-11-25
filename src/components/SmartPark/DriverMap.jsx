@@ -120,6 +120,7 @@ export default function DriverMap({ lot, statuses, recommended, route = [], back
   const geo = useMemo(() => {
     const pts = stalls.flatMap((s) => s.poly);
     if (lot.entrance) pts.push(lot.entrance);
+    if (lot.building) pts.push(lot.building);
     const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const pad = Math.max(maxX - minX, maxY - minY) * 0.06;
@@ -131,7 +132,7 @@ export default function DriverMap({ lot, statuses, recommended, route = [], back
       stroke: Math.max(0.15, stallW * 0.045),
       font: Math.max(stallW * 0.42, (maxX - minX) / 90),
     };
-  }, [stalls, lot.entrance]);
+  }, [stalls, lot.entrance, lot.building]);
 
   const { box, stroke, font } = geo;
   const showPhoto = Boolean(photo && backdrop);
@@ -212,7 +213,13 @@ export default function DriverMap({ lot, statuses, recommended, route = [], back
         </g>
       )}
 
+      {/* walk from your space to the building */}
+      {lot.building && tidyTarget && (
+        <line x1={tidyTarget.centroid.x} y1={tidyTarget.centroid.y} x2={lot.building.x} y2={lot.building.y}
+          stroke="#fbbf24" strokeWidth={font * 0.14} strokeLinecap="round" strokeDasharray={`${font * 0.05} ${font * 0.35}`} opacity="0.9" />
+      )}
       {lot.entrance && <Pill x={lot.entrance.x} y={lot.entrance.y} text="ENTRANCE" font={font * 0.7} bg="#e2e8f0" fg="#0f172a" />}
+      {lot.building && <Pill x={lot.building.x} y={lot.building.y} text="BUILDING" font={font * 0.7} bg="#fbbf24" fg="#1c1917" />}
     </svg>
   );
 }

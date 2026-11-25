@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, CornerUpLeft, CornerUpRight, Expand, Minimize, ParkingSquare, RotateCcw } from "lucide-react";
+import { ArrowUp, Footprints, CornerUpLeft, CornerUpRight, Expand, Minimize, ParkingSquare, RotateCcw } from "lucide-react";
 import DriverMap from "@/components/SmartPark/DriverMap";
-import { directionsFor, occupancyCounts, pathLength } from "@/lib/vision/lot";
+import { directionsFor, occupancyCounts, pathLength, walkDistance } from "@/lib/vision/lot";
 
-const STEP_ICON = { straight: ArrowUp, left: CornerUpLeft, right: CornerUpRight, park: ParkingSquare, uturn: RotateCcw };
+const STEP_ICON = { straight: ArrowUp, left: CornerUpLeft, right: CornerUpRight, park: ParkingSquare, uturn: RotateCcw, walk: Footprints };
 
 // The screen drivers see: an entrance display (full screen) or a phone.
 export default function DriverView({ lot, statuses, recommended, route, backdrop }) {
@@ -14,6 +14,8 @@ export default function DriverView({ lot, statuses, recommended, route, backdrop
   const { total, open, percent: pct } = occupancyCounts(lot.stalls, statuses);
   const steps = useMemo(() => directionsFor(route, recommended, lot.metersPerUnit), [route, recommended, lot.metersPerUnit]);
   const meters = route?.length ? Math.round(pathLength(route) * lot.metersPerUnit) : null;
+  const walk = recommended && lot.building ? Math.max(1, Math.round(walkDistance(lot, recommended) * lot.metersPerUnit)) : null;
+  const allSteps = walk !== null ? [...steps, { kind: "walk", text: `Walk about ${walk} m to the building` }] : steps;
   const full = total > 0 && open === 0;
 
   useEffect(() => {
@@ -64,10 +66,12 @@ export default function DriverView({ lot, statuses, recommended, route, backdrop
               <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-emerald-300/80">Your space</p>
               <div className="mt-2 flex items-center gap-4">
                 <span className="rounded-xl bg-emerald-400 px-4 py-1.5 text-5xl font-extrabold tracking-tight text-emerald-950">{recommended.label}</span>
-                {meters !== null && <span className="text-sm text-slate-300">{meters} m<br /><span className="text-slate-500">from entrance</span></span>}
+                {walk !== null ? (
+                  <span className="text-sm text-slate-300">{walk} m<br /><span className="text-slate-500">walk to building</span></span>
+                ) : meters !== null && <span className="text-sm text-slate-300">{meters} m<br /><span className="text-slate-500">from entrance</span></span>}
               </div>
               <ol className="mt-5 space-y-2.5">
-                {steps.map((step, i) => {
+                {allSteps.map((step, i) => {
                   const Icon = STEP_ICON[step.text.startsWith("Make a U-turn") ? "uturn" : step.kind] || ArrowUp;
                   const last = step.kind === "park";
                   return (

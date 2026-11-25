@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Cpu, Eraser, FileVideo, Grid3x3, Loader2, MapPin, Pause, Play, Route, ScanSearch,
   Smartphone, Sparkles, Square, SquareDashed, Trash2, Video, VideoOff, LogOut as ExitIcon,
+  Building2,
 } from "lucide-react";
 import RemoteCameraDialog from "@/components/SmartPark/RemoteCameraDialog";
 import { makePairCode, receivePhoneCamera } from "@/lib/phoneLink";
@@ -19,6 +20,7 @@ const TOOLS = {
   stall: { label: "Single stall", icon: Square, points: 4, color: "#22d3ee", hint: ["Front-left corner (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
   lane: { label: "Driving lane", icon: Route, points: Infinity, color: "#60a5fa", hint: ["Click along the centre of the lane, in driving direction. Double-click or press Enter to finish."] },
   entrance: { label: "Entrance", icon: MapPin, points: 1, color: "#4ade80", hint: ["Click where cars enter the lot"] },
+  building: { label: "Building", icon: Building2, points: 1, color: "#fbbf24", hint: ["Click the building entrance drivers walk to. The guide then picks the free space with the shortest walk."] },
   exit: { label: "Exit", icon: ExitIcon, points: 1, color: "#f472b6", hint: ["Click where cars leave the lot"] },
   ground: { label: "Lot corners", icon: SquareDashed, points: 4, color: "#38bdf8", hint: ["Click the far-left corner of the paved lot", "Far-right corner", "Near-right corner", "Near-left corner"] },
   erase: { label: "Erase", icon: Eraser, points: 0, color: "#f87171", hint: ["Click a stall or lane to remove it"] },
@@ -493,10 +495,11 @@ export default function LiveCamera({
       // Hand-drawn spaces replace any found automatically in the same place.
       update({ stalls: dedupeStalls([...cal.stalls, ...stalls]) });
     } else if (tool === "entrance") update({ entrance: points[0] });
+    else if (tool === "building") update({ building: points[0] });
     else if (tool === "exit") update({ exit: points[0] });
     else if (tool === "ground") update({ ground: { quad: points, width: groundSize.width, length: groundSize.length } });
     setDraft([]);
-    if (tool === "entrance" || tool === "exit" || tool === "ground") setTool(null);
+    if (tool === "entrance" || tool === "exit" || tool === "ground" || tool === "building") setTool(null);
   };
 
   const onPointerDown = (e) => {
@@ -734,8 +737,8 @@ export default function LiveCamera({
         <Btn active={calibration.view !== "overhead"} onClick={() => update({ view: "angled" })}>Angled</Btn>
         <Btn active={calibration.view === "overhead"} onClick={() => update({ view: "overhead" })}>Overhead</Btn>
         <Btn
-          disabled={!calibration.stalls.length && !calibration.lanes.length && !calibration.entrance && !calibration.ground}
-          onClick={() => { if (window.confirm("Remove all stalls, lanes, entrance/exit and the lot corners?")) update({ stalls: [], lanes: [], entrance: null, exit: null, ground: null }); }}
+          disabled={!calibration.stalls.length && !calibration.lanes.length && !calibration.entrance && !calibration.ground && !calibration.building}
+          onClick={() => { if (window.confirm("Remove all stalls, lanes, entrance/exit, building and the lot corners?")) update({ stalls: [], lanes: [], entrance: null, exit: null, ground: null, building: null }); }}
         >
           <Trash2 className="h-3.5 w-3.5" /> Clear map
         </Btn>

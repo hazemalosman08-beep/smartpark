@@ -50,3 +50,30 @@ console.log("lot ok");
   assert.equal(steps.at(-1).kind, "park");
   void stall;
 }
+
+// Building: the guide picks the free space with the shortest walk to it.
+{
+  const cal = L.sampleCalibration();
+  const plain = L.deriveLot(cal);
+  const g = L.buildLaneGraph(plain.lanes);
+  const nearEntrance = L.recommendStall(plain, g, new Map());
+  const withBuilding = L.deriveLot({ ...cal, building: { x: 90, y: 5 } }); // top-right corner
+  const pick = L.recommendStall(withBuilding, L.buildLaneGraph(withBuilding.lanes), new Map());
+  const d = (s) => Math.hypot(s.centroid.x - withBuilding.building.x, s.centroid.y - withBuilding.building.y);
+  assert.ok(withBuilding.stalls.every((s) => d(s) >= d(pick) - 1e-9), "closest walk to the building");
+  assert.notEqual(pick.label, nearEntrance.label);
+  // A taken space next to the building is skipped.
+  const taken = new Map([[pick.id, { status: "occupied" }]]);
+  assert.notEqual(L.recommendStall(withBuilding, L.buildLaneGraph(withBuilding.lanes), taken).id, pick.id);
+  console.log("building ok:", nearEntrance.label, "->", pick.label);
+}
+
+// A space the lanes do not reach is still a candidate (straight-line fallback).
+{
+  const cal = L.sampleCalibration();
+  const lot = L.deriveLot({ ...cal, building: { x: 90, y: 5 } });
+  const graph = L.buildLaneGraph([{ id: "x", points: [{ x: 0, y: 0 }, { x: 1, y: 0 }] }].map((l) => ({ ...l, points: l.points.map(lot.toLot) })));
+  const cost = L.stallCost(lot, graph, lot.stalls[0]);
+  assert.ok(Number.isFinite(cost));
+  console.log("unreachable fallback ok");
+}

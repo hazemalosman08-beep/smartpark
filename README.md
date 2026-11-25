@@ -16,6 +16,9 @@ A parking-lot camera app that runs entirely in the browser. No backend and no ac
 - **Driver tab:** the screen drivers see, on an entrance display (Full screen) or a phone. It shows how many
   spaces are open and which space to take, gives step-by-step directions, and animates a car driving the route
   on the real lot. It follows the camera live: if the space is taken, the next best one is shown.
+- **Building:** on the Camera tab, the Building tool marks where drivers walk to. The guide then sends each
+  driver to the free space with the shortest walk to it, and the directions end with the walking distance.
+  Routes are planned over the open pavement between the spaces (or along lanes drawn by hand).
 - **Find my car:** look up a car by its ID on the same device.
 - **Installable** as an app (PWA): "Install app" in Chrome/Edge/Android, or Share → Add to Home Screen on iPhone.
 
