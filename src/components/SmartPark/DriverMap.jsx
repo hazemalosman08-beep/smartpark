@@ -11,6 +11,7 @@ const median = (values) => {
 const C = {
   bg: "#0b1014",
   surface: "#151c22",
+  pave: "#1e262e",
   surfaceEdge: "#222c35",
   line: "rgba(226,232,240,0.55)",
   free: "#22c55e",
@@ -114,7 +115,9 @@ function reshape(s, poly) {
   return { ...s, poly, front, back, centroid: mul(add(front, back), 0.5), heading: Math.atan2(back.y - front.y, back.x - front.x) };
 }
 
-export default function DriverMap({ lot, statuses, recommended, route = [], backdrop = null, photo = false }) {
+// scene: the camera picture redrawn as an illustrated map (sceneStyle.js), in
+// the same place as backdrop; it shows whatever is around the lot.
+export default function DriverMap({ lot, statuses, recommended, route = [], backdrop = null, photo = false, scene = null }) {
   const stalls = useMemo(() => tidyStalls(lot.stalls), [lot]);
   const tidyTarget = recommended ? stalls.find((s) => s.id === recommended.id) || recommended : null;
   const geo = useMemo(() => {
@@ -122,20 +125,32 @@ export default function DriverMap({ lot, statuses, recommended, route = [], back
     if (lot.entrance) pts.push(lot.entrance);
     if (lot.building) pts.push(lot.building);
     const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-    const pad = Math.max(maxX - minX, maxY - minY) * 0.06;
+    let minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const stallW = median(stalls.map((s) => dist(s.poly[0], s.poly[1])));
     const stallD = median(stalls.map((s) => dist(s.front, s.back)));
+    const font = Math.max(stallW * 0.42, (maxX - minX) / 90);
+    let pad = Math.max(maxX - minX, maxY - minY) * 0.06;
+    // With the picture drawn around the lot, show its surroundings too
+    // (buildings, roads), up to half the lot's size on each side.
+    if (backdrop && (scene || photo)) {
+      const ex = (maxX - minX) * 0.5, ey = (maxY - minY) * 0.5;
+      minX = Math.min(minX, Math.max(backdrop.x, minX - ex));
+      maxX = Math.max(maxX, Math.min(backdrop.x + backdrop.w, maxX + ex));
+      minY = Math.min(minY, Math.max(backdrop.y, minY - ey));
+      maxY = Math.max(maxY, Math.min(backdrop.y + backdrop.h, maxY + ey));
+      pad = 0;
+    }
     return {
       box: { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 },
       stallW, stallD,
       stroke: Math.max(0.15, stallW * 0.045),
-      font: Math.max(stallW * 0.42, (maxX - minX) / 90),
+      font,
     };
-  }, [stalls, lot.entrance, lot.building]);
+  }, [stalls, lot.entrance, lot.building, backdrop, scene, photo]);
 
   const { box, stroke, font } = geo;
   const showPhoto = Boolean(photo && backdrop);
+  const showScene = Boolean(!photo && backdrop && scene);
   // End the route in the middle of the tidied space.
   const routeTidy = tidyTarget && route.length > 1 ? [...route.slice(0, -1), tidyTarget.centroid] : route;
   const routePts = routeTidy.map((p) => `${p.x},${p.y}`).join(" ");
@@ -160,6 +175,8 @@ export default function DriverMap({ lot, statuses, recommended, route = [], back
       <rect x={box.x} y={box.y} width={box.w} height={box.h} fill={C.bg} />
       {showPhoto ? (
         <image href={backdrop.href} x={backdrop.x} y={backdrop.y} width={backdrop.w} height={backdrop.h} preserveAspectRatio="none" opacity="0.55" />
+      ) : showScene ? (
+        <image href={scene} x={backdrop.x} y={backdrop.y} width={backdrop.w} height={backdrop.h} preserveAspectRatio="none" />
       ) : (
         <rect x={box.x + font * 0.3} y={box.y + font * 0.3} width={box.w - font * 0.6} height={box.h - font * 0.6} rx={font * 0.8} fill={C.surface} stroke={C.surfaceEdge} strokeWidth={stroke} />
       )}
@@ -172,6 +189,8 @@ export default function DriverMap({ lot, statuses, recommended, route = [], back
         const pts = s.poly.map((p) => `${p.x},${p.y}`).join(" ");
         return (
           <g key={s.id}>
+            {/* the map is drawn from the picture: cover the photographed car, the drawn one takes its place */}
+            {showScene && <polygon points={pts} fill={C.pave} stroke="none" />}
             <polygon points={pts} fill={isTarget ? "rgba(74,222,128,0.35)" : taken ? C.takenFill : C.freeFill} stroke="none" />
             {/* painted lines: both sides and the back, open to the aisle */}
             <polyline

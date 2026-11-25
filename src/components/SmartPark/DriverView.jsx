@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Footprints, CornerUpLeft, CornerUpRight, Expand, Minimize, ParkingSquare, RotateCcw } from "lucide-react";
 import DriverMap from "@/components/SmartPark/DriverMap";
+import { stylizeScene } from "@/lib/vision/sceneStyle";
 import { directionsFor, occupancyCounts, pathLength, walkDistance } from "@/lib/vision/lot";
 
 const STEP_ICON = { straight: ArrowUp, left: CornerUpLeft, right: CornerUpRight, park: ParkingSquare, uturn: RotateCcw, walk: Footprints };
@@ -17,6 +18,26 @@ export default function DriverView({ lot, statuses, recommended, route, backdrop
   const walk = recommended && lot.building ? Math.max(1, Math.round(walkDistance(lot, recommended) * lot.metersPerUnit)) : null;
   const allSteps = walk !== null ? [...steps, { kind: "walk", text: `Walk about ${walk} m to the building` }] : steps;
   const full = total > 0 && open === 0;
+  // The camera picture redrawn as a map: the lot and everything around it.
+  // Live video changes every frame; the surroundings do not, so it is redrawn
+  // at most every 30 seconds — at once when a new lot (new picture) is mapped.
+  const [scene, setScene] = useState(null);
+  const sceneAt = useRef(0);
+  const sceneLot = useRef(null);
+  const backdropHref = backdrop?.href;
+  useEffect(() => {
+    if (!backdropHref) { setScene(null); return undefined; }
+    if (sceneLot.current === lot.stalls && Date.now() - sceneAt.current < 30000) return undefined;
+    const forLot = lot.stalls;
+    let cancelled = false;
+    stylizeScene(backdropHref).then((url) => {
+      if (cancelled) { URL.revokeObjectURL(url); return; }
+      sceneAt.current = Date.now();
+      sceneLot.current = forLot;
+      setScene((old) => { if (old) setTimeout(() => URL.revokeObjectURL(old), 2000); return url; });
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [backdropHref, lot.stalls]);
 
   useEffect(() => {
     const t = setInterval(() => setClock(new Date()), 15000);
@@ -108,7 +129,7 @@ export default function DriverView({ lot, statuses, recommended, route, backdrop
             </div>
           )}
           <div className="absolute inset-0 p-1 sm:p-3">
-            <DriverMap lot={lot} statuses={statuses} recommended={recommended} route={route} backdrop={backdrop} photo={photo} />
+            <DriverMap lot={lot} statuses={statuses} recommended={recommended} route={route} backdrop={backdrop} photo={photo} scene={scene} />
           </div>
         </section>
       </div>
