@@ -634,3 +634,350 @@ export function stallAppearance({ data, width: W, height: H }, stalls) {
   const spread = Math.max(6, median(bySd.map((f) => Math.abs(f.mean - m0))) * 2.5);
   return new Map(feats.map((f) => [f.id, Math.max(Math.abs(f.mean - m0) / (spread * 2.2), (f.sd - s0) / Math.max(10, s0 * 2.2))]));
 }
+
+// ===========================================================================
+// Row-based space finder.
+//
+// Parking lots are regular: within a row, the dividers are parallel, start and
+// end at the same lines, and repeat at a fixed spacing. Instead of building
+// each space from whatever lines happen to touch, this finder
+//   1. finds the divider direction(s) (many parallel lines of similar length),
+//   2. groups dividers into row bands that share the same start/end,
+//   3. measures the row's spacing from the dividers themselves,
+//   4. makes a space between each pair of neighbouring dividers; a gap of two
+//      spacings is a divider hidden under a car (three only with a car in it);
+//      anything wider is an island or road and splits the row,
+//   5. takes the row's depth from where most dividers start and end (one stray
+//      long line or a kerb cannot stretch it),
+//   6. adds a space past the last divider only where a car is parked there.
+// ===========================================================================
+
+function collectSegments(points, W, H, minLen) {
+  let segs = [];
+  for (let a = 0; a < 180; a += 2) segs.push(...segmentsAlong(points, W, H, a, { minLen }));
+  segs.sort((a, b) => b.len - a.len);
+  const kept = [];
+  for (const s of segs) {
+    const m = mid(s);
+    const dup = kept.some((k) => {
+      const dAng = Math.abs(((k.angle - s.angle + 90 + 180) % 180) - 90);
+      if (dAng > 5) return false;
+      const t = (k.angle * Math.PI) / 180;
+      const off = Math.abs((m.x - k.p.x) * -Math.sin(t) + (m.y - k.p.y) * Math.cos(t));
+      const along = (m.x - k.p.x) * Math.cos(t) + (m.y - k.p.y) * Math.sin(t);
+      return off < 4 && along > -s.len * 0.3 && along < k.len + s.len * 0.3;
+    });
+    if (!dup) kept.push(s);
+  }
+  return mergeCollinear(kept);
+}
+
+const angleDiff = (a, b) => { const d = Math.abs(a - b) % 180; return Math.min(d, 180 - d); };
+
+// Divider directions: angles shared by many segments of similar length that
+// stand side by side (a row), weighted by how many such neighbours they have.
+function dividerDirections(segs) {
+  const score = new Float64Array(180);
+  segs.forEach((s, i) => {
+    let neighbours = 0;
+    for (let j = 0; j < segs.length; j += 1) {
+      if (i === j) continue;
+      const o = segs[j];
+      if (angleDiff(s.angle, o.angle) > 6) continue;
+      const r = s.len / o.len;
+      if (r < 0.6 || r > 1.65) continue;
+      const t = (s.angle * Math.PI) / 180;
+      const d = { x: mid(o).x - mid(s).x, y: mid(o).y - mid(s).y };
+      const along = Math.abs(d.x * Math.cos(t) + d.y * Math.sin(t));
+      const across = Math.abs(-d.x * Math.sin(t) + d.y * Math.cos(t));
+      if (along < s.len * 0.35 && across > s.len * 0.15 && across < s.len * 1.2) neighbours += 1;
+    }
+    if (neighbours >= 1) score[Math.round(s.angle) % 180] += Math.min(neighbours, 2);
+  });
+  const smooth = (a) => { let t = 0; for (let d = -4; d <= 4; d += 1) t += score[(a + d + 180) % 180]; return t; };
+  const sm = Array.from({ length: 180 }, (_, a) => smooth(a));
+  const peaks = [];
+  for (let a = 0; a < 180; a += 1) {
+    let isMax = sm[a] > 0;
+    for (let d = -10; d <= 10 && isMax; d += 1) if (d && sm[(a + d + 180) % 180] > sm[a]) isMax = false;
+    if (isMax && !peaks.some((p) => angleDiff(p.a, a) < 15)) peaks.push({ a, s: sm[a] });
+  }
+  peaks.sort((x, y) => y.s - x.s);
+  const top = peaks[0]?.s || 0;
+  return peaks.filter((p) => p.s >= Math.max(6, top * 0.3)).slice(0, 2).map((p) => p.a);
+}
+
+// Share of a row cell that is vegetation or bare earth (not asphalt/concrete).
+function planted({ data, width: W, height: H }, a, b, v0, v1, r) {
+  let n = 0, t = 0;
+  for (let i = 1; i < 8; i += 1) for (let j = 1; j < 8; j += 1) {
+    const u = a + ((b - a) * i) / 8, v = v0 + ((v1 - v0) * j) / 8;
+    const x = Math.round(v * r.ux + u * r.px), y = Math.round(v * r.uy + u * r.py);
+    if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    const k = (y * W + x) * 4;
+    const R = data[k], G = data[k + 1], B = data[k + 2];
+    t += 1;
+    const green = G > R + 6 && G > B + 6;
+    const earth = R > B + 22 && G > B + 8 && R - G < 45; // brown soil / mulch
+    if (green || earth) n += 1;
+  }
+  return t ? n / t : 0;
+}
+
+export function findStallsByRows(image, { vehicles = [] } = {}) {
+  const { width: W, height: H } = image;
+  const mask = paintMask(image, { vehicles });
+  const points = [];
+  for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) if (mask[y * W + x]) points.push([x, y]);
+  if (points.length < 50) return { stalls: [], aisles: [], debug: { points: points.length, rows: 0 }, segments: [] };
+  const minLen = Math.max(10, Math.min(W, H) * 0.035);
+  // Dividers running straight through a double row (or across a kerb between
+  // two rows) are cut where a long line crosses them: each half is one row.
+  const raw = collectSegments(points, W, H, minLen);
+  const dirs = dividerDirections(splitAtCrossings(raw).filter((s) => s.len >= minLen * 1.4));
+  // Cut dividers at row boundaries: kerb edges, back lines and centre lines run
+  // across the dividers. They are often broken (trees, worn paint), so every
+  // crossing piece nearby counts, not only one long unbroken line.
+  const all = [];
+  for (const sg of raw) {
+    const dir = dirs.find((d) => angleDiff(sg.angle, d) <= 8);
+    if (dir === undefined) { all.push(sg); continue; }
+    const t = (sg.angle * Math.PI) / 180;
+    const ux = Math.cos(t), uy = Math.sin(t), px = -uy, py = ux;
+    const sv0 = sg.p.x * ux + sg.p.y * uy, sv1 = sg.q.x * ux + sg.q.y * uy;
+    const lo = Math.min(sv0, sv1), hi = Math.max(sv0, sv1);
+    const su = mid(sg).x * px + mid(sg).y * py;
+    const reach = Math.max(minLen * 2, sg.len * 0.9);
+    const cuts = [];
+    for (const o of raw) {
+      if (o === sg || angleDiff(o.angle, (dir + 90) % 180) > 15 || o.len < minLen * 0.8) continue;
+      const ou0 = o.p.x * px + o.p.y * py, ou1 = o.q.x * px + o.q.y * py;
+      if (su < Math.min(ou0, ou1) - reach || su > Math.max(ou0, ou1) + reach) continue;
+      const ov = (mid(o).x * ux + mid(o).y * uy);
+      if (ov > lo + sg.len * 0.15 && ov < hi - sg.len * 0.15) cuts.push(ov);
+    }
+    if (!cuts.length) { all.push(sg); continue; }
+    cuts.sort((a, b) => a - b);
+    // Several pieces of one boundary line count once.
+    const merged = [];
+    for (const c of cuts) if (!merged.length || c - merged[merged.length - 1] > minLen * 0.5) merged.push(c);
+    const ts = [lo, ...merged, hi];
+    for (let i = 0; i < ts.length - 1; i += 1) {
+      const a = ts[i] + (i ? 2 : 0), b = ts[i + 1] - (i < ts.length - 2 ? 2 : 0);
+      if (b - a < minLen * 1.4) continue;
+      // point on the divider at v: start point shifted along its direction
+      const at = (v) => ({ x: (sv0 < sv1 ? sg.p.x : sg.q.x) + ux * (v - lo), y: (sv0 < sv1 ? sg.p.y : sg.q.y) + uy * (v - lo) });
+      all.push({ ...sg, p: at(a), q: at(b), len: b - a });
+    }
+  }
+  for (let i = all.length - 1; i >= 0; i -= 1) if (all[i].len < minLen * 1.4) all.splice(i, 1);
+  const sampleMask = (x, y) => {
+    const xi = Math.round(x), yi = Math.round(y);
+    return xi >= 0 && yi >= 0 && xi < W && yi < H && mask[yi * W + xi] ? 1 : 0;
+  };
+  const carsPx = vehicles.map((v) => ({ x: ((v.x + v.w / 2) / 100) * W, y: ((v.y + v.h / 2) / 100) * H }));
+
+  const rows = [];
+  for (const dir of dirs) {
+    const members = all.filter((s) => angleDiff(s.angle, dir) <= 7);
+    const theta = (median(members.map((s) => ((s.angle - dir + 90 + 180) % 180) - 90)) + dir) * Math.PI / 180;
+    const ux = Math.cos(theta), uy = Math.sin(theta); // along the dividers
+    const px = -uy, py = ux; // along the row
+    const divs = members.map((s) => {
+      const a = s.p.x * ux + s.p.y * uy, b = s.q.x * ux + s.q.y * uy;
+      const m = mid(s);
+      return { v0: Math.min(a, b), v1: Math.max(a, b), u: m.x * px + m.y * py, len: s.len };
+    });
+    // Row bands: dividers overlapping along their length and sharing an end.
+    const parent = divs.map((_, i) => i);
+    const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    for (let i = 0; i < divs.length; i += 1) {
+      for (let j = i + 1; j < divs.length; j += 1) {
+        const a = divs[i], b = divs[j];
+        const L = Math.min(a.len, b.len);
+        const overlap = Math.min(a.v1, b.v1) - Math.max(a.v0, b.v0);
+        if (overlap < 0.6 * L) continue;
+        if (Math.abs(a.v0 - b.v0) < 0.2 * L || Math.abs(a.v1 - b.v1) < 0.2 * L) parent[find(i)] = find(j);
+      }
+    }
+    const bands = new Map();
+    divs.forEach((d, i) => { const r = find(i); if (!bands.has(r)) bands.set(r, []); bands.get(r).push(d); });
+    for (const band of bands.values()) {
+      if (band.length < 3) continue;
+      const L = median(band.map((d) => d.len));
+      band.sort((a, b) => a.u - b.u);
+      // Two detections of one divider: keep the longer.
+      const uniq = [];
+      for (const d of band) {
+        const last = uniq[uniq.length - 1];
+        if (last && d.u - last.u < L * 0.12) { if (d.len > last.len) uniq[uniq.length - 1] = d; } else uniq.push(d);
+      }
+      const gaps = uniq.slice(1).map((d, i) => d.u - uniq[i].u).filter((g) => g > L * 0.22 && g < L * 0.95);
+      if (gaps.length < 2) continue;
+      // Spacing: the most common gap (median of the smallest half guards against
+      // gaps containing hidden dividers).
+      const sorted = [...gaps].sort((a, b) => a - b);
+      const pitch = median(sorted.slice(0, Math.max(2, Math.ceil(sorted.length * 0.6))));
+      // Depth from the ends most dividers agree on.
+      const v0 = median(uniq.map((d) => d.v0)), v1 = median(uniq.map((d) => d.v1));
+      const inBand = (c) => {
+        const v = c.x * ux + c.y * uy;
+        return v > v0 - (v1 - v0) * 0.1 && v < v1 + (v1 - v0) * 0.1;
+      };
+      const carU = carsPx.filter(inBand).map((c) => c.x * px + c.y * py);
+      // Runs of neighbouring dividers at the row's spacing.
+      let run = [uniq[0].u];
+      const runs = [];
+      for (let i = 1; i < uniq.length; i += 1) {
+        const a = uniq[i - 1].u, b = uniq[i].u;
+        const ratio = (b - a) / pitch;
+        const k = Math.round(ratio);
+        const carInside = carU.some((u) => u > a && u < b);
+        const ok = k >= 1 && Math.abs(ratio - k) < 0.3 && (k <= 2 || (k === 3 && carInside));
+        if (ok) {
+          for (let s = 1; s < k; s += 1) run.push(a + ((b - a) * s) / k);
+          run.push(b);
+        } else {
+          runs.push(run);
+          run = [b];
+        }
+      }
+      runs.push(run);
+      for (let r of runs) {
+        // A car parked just past either end: its divider is hidden, add the space.
+        for (let n = 0; n < 2; n += 1) {
+          const lo = r[0], hi = r[r.length - 1];
+          if (carU.some((u) => u < lo && u > lo - pitch * 1.05)) r = [lo - pitch, ...r];
+          if (carU.some((u) => u > hi && u < hi + pitch * 1.05)) r = [...r, hi + pitch];
+        }
+        if (r.length < 3) continue; // fewer than two spaces: road markings, kerbs
+        rows.push({ us: r, v0, v1, ux, uy, px, py, pitch, L });
+      }
+    }
+  }
+
+  // Which end of a row faces the aisle: beyond the back end there is usually a
+  // painted line, kerb or the next row; beyond the front, open asphalt.
+  const P = (u, v, r) => ({ x: v * r.ux + u * r.px, y: v * r.uy + u * r.py });
+  const out = [];
+  const aisles = [];
+  rows.forEach((r) => {
+    const depth = r.v1 - r.v0;
+    const busy = (v) => {
+      let n = 0, t = 0;
+      for (let i = 0; i < r.us.length; i += 1) for (let f = 0.08; f <= 0.3; f += 0.055) {
+        const p = P(r.us[i], v, r); t += 1; n += sampleMask(p.x, p.y);
+      }
+      return t ? n / t : 0;
+    };
+    const frontAtV0 = busy(r.v0 - depth * 0.15) <= busy(r.v1 + depth * 0.15);
+    for (let i = 0; i < r.us.length - 1; i += 1) {
+      const a = r.us[i], b = r.us[i + 1];
+      const f = frontAtV0 ? r.v0 : r.v1, k = frontAtV0 ? r.v1 : r.v0;
+      const poly = [P(a, f, r), P(b, f, r), P(b, k, r), P(a, k, r)];
+      // An island edge looks like one more divider: a "space" that is mostly
+      // grass or bare earth, with no car in it, is not a parking space.
+      const hasCar = carsPx.some((c) => Math.abs((c.x * r.px + c.y * r.py) - (a + b) / 2) < (b - a) * 0.6 && Math.abs((c.x * r.ux + c.y * r.uy) - (r.v0 + r.v1) / 2) < (r.v1 - r.v0) * 0.6);
+      if (!hasCar && planted(image, a, b, r.v0, r.v1, r) > 0.3) continue;
+      out.push({ poly, row: r });
+    }
+    const f = frontAtV0 ? r.v0 - depth * 0.6 : r.v1 + depth * 0.6;
+    aisles.push({ points: [P(r.us[0] - r.pitch, f, r), P(r.us[r.us.length - 1] + r.pitch, f, r)] });
+  });
+
+  // Overlapping spaces from two directions/bands: keep the first (larger rows first).
+  const pct = (p) => ({ x: Math.round(clamp((p.x / W) * 100, 0, 100) * 100) / 100, y: Math.round(clamp((p.y / H) * 100, 0, 100) * 100) / 100 });
+  const centroid = (poly) => ({ x: poly.reduce((s, p) => s + p.x, 0) / poly.length, y: poly.reduce((s, p) => s + p.y, 0) / poly.length });
+  const inside = (p, poly) => {
+    let res = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i += 1) {
+      const a = poly[i], b = poly[j];
+      if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) res = !res;
+    }
+    return res;
+  };
+  const rowSize = new Map(rows.map((r) => [r, r.us.length]));
+  const accepted = [];
+  for (const s of out.sort((a, b) => rowSize.get(b.row) - rowSize.get(a.row))) {
+    const c = centroid(s.poly);
+    if (accepted.some((t) => inside(c, t.poly) || inside(centroid(t.poly), s.poly))) continue;
+    // Mostly outside the picture: not a usable space.
+    if (c.x < 0 || c.y < 0 || c.x > W || c.y > H) continue;
+    accepted.push(s);
+  }
+
+  // Name rows A, B, C… and number spaces along each row.
+  const rowList = [...new Set(accepted.map((s) => s.row))];
+  const rowCentre = new Map(rowList.map((r) => {
+    const cs = accepted.filter((s) => s.row === r).map((s) => centroid(s.poly));
+    return [r, { x: cs.reduce((a, p) => a + p.x, 0) / cs.length, y: cs.reduce((a, p) => a + p.y, 0) / cs.length }];
+  }));
+  rowList.sort((a, b) => rowCentre.get(a).y - rowCentre.get(b).y || rowCentre.get(a).x - rowCentre.get(b).x);
+  const letter = (i) => (i < 26 ? String.fromCharCode(65 + i) : `${String.fromCharCode(64 + Math.floor(i / 26))}${String.fromCharCode(65 + (i % 26))}`);
+  const stalls = [];
+  rowList.forEach((row, ri) => {
+    const L2 = letter(ri);
+    const along = (s) => { const c = centroid(s.poly); return c.x * row.px + c.y * row.py; };
+    accepted.filter((s) => s.row === row).sort((a, b) => along(a) - along(b)).forEach((s, i) => {
+      stalls.push({ id: `${L2}${i + 1}-${Math.random().toString(36).slice(2, 7)}`, row: L2, index: i + 1, label: `${L2}${i + 1}`, poly: s.poly.map(pct), auto: true });
+    });
+  });
+  return {
+    stalls,
+    aisles: aisles.map((a, i) => ({ id: `auto-aisle-${i}`, points: a.points.map(pct), auto: true })),
+    debug: { points: points.length, directions: dirs, segments: all.length, rows: rows.length },
+    segments: all.map((s) => ({ p: pct(s.p), q: pct(s.q) })),
+  };
+}
+
+// Both finders together: the row finder first (exact on regular rows); the
+// line-pair finder fills in where the row finder found nothing (angled /
+// herringbone rows, odd shapes). A line-pair space overlapping a row space is
+// dropped.
+export function findStallsCombined(image, opts = {}) {
+  const rows = findStallsByRows(image, opts);
+  const pairs = findStalls(image, opts);
+  const centre = (poly) => ({ x: poly.reduce((s, p) => s + p.x, 0) / poly.length, y: poly.reduce((s, p) => s + p.y, 0) / poly.length });
+  const inside = (p, poly) => {
+    let r = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i += 1) {
+      const a = poly[i], b = poly[j];
+      if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) r = !r;
+    }
+    return r;
+  };
+  // Pixel-sampled overlap (percent space), enough to spot a clash.
+  const clash = (a, b) => {
+    if (inside(centre(a.poly), b.poly) || inside(centre(b.poly), a.poly)) return true;
+    let hit = 0;
+    for (const p of a.poly) if (inside(p, b.poly)) hit += 1;
+    return hit >= 2;
+  };
+  const kept = [...rows.stalls];
+  const rowLetters = new Set(kept.map((s) => s.row));
+  const rename = new Map();
+  const letter = (i) => (i < 26 ? String.fromCharCode(65 + i) : `${String.fromCharCode(64 + Math.floor(i / 26))}${String.fromCharCode(65 + (i % 26))}`);
+  let next = rowLetters.size;
+  // Divider direction of a space: its side edge (front corner -> back corner).
+  const sideAngle = (st) => {
+    const a = st.poly[0], d = st.poly[3];
+    return ((Math.atan2(d.y - a.y, d.x - a.x) * 180) / Math.PI + 180) % 180;
+  };
+  const rowDirs = rows.debug.directions || [];
+  for (const s of pairs.stalls) {
+    if (kept.some((k) => clash(s, k))) continue;
+    // Where regular rows were found, the line-pair finder only adds spaces of a
+    // different orientation (an angled section); in the same orientation it
+    // mostly picks up kerbs and cut-off rows the row finder rightly rejected.
+    if (rows.stalls.length && rowDirs.some((d) => angleDiff(sideAngle(s), d) < 15)) continue;
+    if (!rename.has(s.row)) rename.set(s.row, letter(next++));
+    const row = rename.get(s.row);
+    kept.push({ ...s, row, label: `${row}${s.index}`, id: `${row}${s.index}-${Math.random().toString(36).slice(2, 7)}` });
+  }
+  return {
+    stalls: kept,
+    aisles: rows.aisles.length ? rows.aisles : pairs.aisles,
+    debug: { rows: rows.debug.rows + pairs.debug.rows, rowFinder: rows.stalls.length, lineFinder: kept.length - rows.stalls.length },
+    segments: rows.segments,
+  };
+}

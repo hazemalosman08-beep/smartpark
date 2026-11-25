@@ -1,6 +1,6 @@
 // One-click lot mapping: painted stall lines + parked cars -> stalls, aisles and
 // an entrance, ready for counting and for the top-down plan.
-import { findStalls } from "./stallFinder.js";
+import { findStallsCombined as findStalls } from "./stallFinder.js";
 import { dedupeStalls, nextRowLetter, stallsFromVehicles } from "./lot.js";
 
 /**

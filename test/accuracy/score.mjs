@@ -44,6 +44,8 @@ export function score(truth, app) {
   const found = covering.filter((c) => c.length >= 1).length;
   const duplicates = covering.reduce((n, c) => n + Math.max(0, c.length - 1), 0);
   const usedIds = new Set(covering.flat().map((s) => s.id));
+  // One app space covering two or more real spaces (too wide, or two rows as one).
+  const merged = stalls.filter((s) => truth.spaces.filter((t) => inside(t, s.px)).length > 1).length;
   // Extra: an app space covering no labelled space, but lying inside the labelled
   // rows' area (spaces outside it, e.g. cut off by the picture edge, are ignored).
   const xs = truth.spaces.length ? truth.spaces.map((t) => t.x) : [0], ys = truth.spaces.length ? truth.spaces.map((t) => t.y) : [0];
@@ -68,7 +70,7 @@ export function score(truth, app) {
   const appTotal = stalls.length;
   const appTaken = stalls.filter((s) => status.get(s.id)?.status === "occupied").length;
   return {
-    spaces: { truth: truth.spaces.length, found, missed: truth.spaces.length - found, duplicates, extra, appTotal, overlaps },
+    spaces: { truth: truth.spaces.length, found, missed: truth.spaces.length - found, duplicates, extra, merged, appTotal, overlaps },
     occupancy: { correct: occRight, checked: occChecked, truthTaken, appTaken, wrong },
   };
 }

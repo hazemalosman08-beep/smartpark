@@ -26,6 +26,6 @@ const path = require("path");
     console.log(`${truth.image}: ${app.vehicles} cars | app ${s.appTotal} spaces, ${o.appTaken} taken | overlapping pairs ${s.overlaps} (unlabelled picture)`);
     return;
   }
-  console.log(`${truth.image}: ${app.vehicles} cars | overlapping pairs ${s.overlaps} | spaces ${s.found}/${s.truth} found, ${s.missed} missed, ${s.duplicates} duplicates, ${s.extra} extra (app total ${s.appTotal}) | occupancy ${o.correct}/${o.checked} right, app says ${o.appTaken} taken vs ${o.truthTaken} truly taken`);
+  console.log(`${truth.image}: ${app.vehicles} cars | overlapping pairs ${s.overlaps} | spaces ${s.found}/${s.truth} found, ${s.missed} missed, ${s.duplicates} duplicates, ${s.extra} extra, ${s.merged} merged (app total ${s.appTotal}) | occupancy ${o.correct}/${o.checked} right, app says ${o.appTaken} taken vs ${o.truthTaken} truly taken`);
   if (o.wrong.length) console.log("  wrong:", o.wrong.join(", "));
 })();
