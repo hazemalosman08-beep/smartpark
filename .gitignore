@@ -38,3 +38,12 @@ base44/.app.jsonc
 
 # Download bundles made for sharing
 *.zip
+
+# Screenshots written by the UI test run
+test/e2e/cam1.png
+test/e2e/cam_ground.png
+test/e2e/lot_camera.png
+test/e2e/lot_camera2.png
+test/e2e/lot_rectified.png
+test/e2e/lot_sim.png
+test/e2e/lot_sim_phone.png
