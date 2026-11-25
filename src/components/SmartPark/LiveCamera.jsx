@@ -1,755 +1,672 @@
-import React, { useRef, useState, useEffect, useCallback } from "react";
-import { Video, VideoOff, Loader2, Smartphone } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Cpu, Eraser, FileVideo, Grid3x3, Loader2, MapPin, Pause, Play, Route, ScanSearch,
+  Smartphone, Sparkles, Square, SquareDashed, Trash2, Video, VideoOff, Wand2, LogOut as ExitIcon,
+} from "lucide-react";
 import { base44 } from "@/api/base44Client";
-import SpotCalibrator from "@/components/SmartPark/SpotCalibrator";
 import RemoteCameraDialog from "@/components/SmartPark/RemoteCameraDialog";
-import LiveCameraTools from "@/components/SmartPark/LiveCameraTools";
-import TrackBoxes from "@/components/SmartPark/TrackBoxes";
-import { buildSpotGrid } from "@/lib/spotGrid";
-import { occupancyFromCars } from "@/lib/carDetect";
-import { createDetectionState, detectCameraVehicles } from "@/lib/liveVehicleDetection";
 import useRemoteCamera, { makePairCode } from "@/lib/useRemoteCamera";
-import usePhoneFrames from "@/lib/usePhoneFrames";
-import { captureCameraImage } from "@/lib/cameraSession";
 import scanFrameFile from "@/lib/scanFrameFile";
-import { createTrackState, stepTracks } from "@/lib/vehicleTracker";
-import freezeDetectionFrame from "@/lib/freezeDetectionFrame";
-import { Image as CameraImage } from "@/components/ui/image";
+import { detectVehiclesLocal, onDetectorStatus, preloadDetector, setDetectorModel, MODELS } from "@/lib/vision/vehicleDetector";
+import { createTracker } from "@/lib/vision/tracker";
+import {
+  assignVehiclesToStalls, createOccupancy, groundPoint, makeStallRow, nextRowLetter, stallFromVehicle, stallUnder, stallsFromCenters,
+} from "@/lib/vision/lot";
+import { drawOverlay } from "@/lib/vision/overlay";
+import { iou, pointInPolygon, projectOnSegment } from "@/lib/vision/geometry";
 
-const EMPTY_LIST = [];
-const SCAN_PAUSE_MS = 3000;
+const TOOLS = {
+  row: { label: "Stall row", icon: Grid3x3, points: 4, color: "#22d3ee", hint: ["Click the front-left corner of the row (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
+  stall: { label: "Single stall", icon: Square, points: 4, color: "#22d3ee", hint: ["Front-left corner (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
+  lane: { label: "Driving lane", icon: Route, points: Infinity, color: "#60a5fa", hint: ["Click along the centre of the lane, in driving direction. Double-click or press Enter to finish."] },
+  entrance: { label: "Entrance", icon: MapPin, points: 1, color: "#4ade80", hint: ["Click where cars enter the lot"] },
+  exit: { label: "Exit", icon: ExitIcon, points: 1, color: "#f472b6", hint: ["Click where cars leave the lot"] },
+  ground: { label: "Lot corners", icon: SquareDashed, points: 4, color: "#38bdf8", hint: ["Click the far-left corner of the paved lot", "Far-right corner", "Near-right corner", "Near-left corner"] },
+  erase: { label: "Erase", icon: Eraser, points: 0, color: "#f87171", hint: ["Click a stall or lane to remove it"] },
+};
 
-// The live feed measures the lot from what you draw. Only the reference spot
-// and lot boundaries are overlaid; detection results stay off the camera image.
+const SOURCES_IDLE = "none";
+
 export default function LiveCamera({
-  lockedLayout,
-  onLockLayout,
-  onSpotsUpdate,
-  onFrameUpdate,
-  onOpenSimulation,
   calibration,
   onCalibrationChange,
+  lot,
+  onUpdate,
+  assignVehicleId,
   remoteCode = "",
   onRemoteCodeChange,
-  onPhoneDisplay,
-  remoteRole = "viewer",
-  autoStart = false,
-  onTracksUpdate,
-  assignVehicleId,
-  snapshot = null,
-  onSnapshotChange,
-  trackingStateRef,
+  visible = true,
 }) {
-  const videoRef = useRef(null);
-  const boxRef = useRef(null);
+  const stageRef = useRef(null);
+  const canvasRef = useRef(null);
+  const webcamRef = useRef(null);
+  const phoneVideoRef = useRef(null);
+  const phoneImgRef = useRef(null);
+  const fileVideoRef = useRef(null);
+  const fileImgRef = useRef(null);
+  const frozenRef = useRef(null);
   const streamRef = useRef(null);
-  const [active, setActive] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const [source, setSource] = useState(SOURCES_IDLE); // none | webcam | phone | image | video
+  const [fileUrl, setFileUrl] = useState(null);
+  const [frozen, setFrozen] = useState(false);
   const [error, setError] = useState(null);
-  const [scanning, setScanning] = useState(false);
-  const [detecting, setDetecting] = useState(false);
-  const [scanError, setScanError] = useState(null);
-  const [captured, setCaptured] = useState(false);
-  const [cars, setCars] = useState([]);
-  const [tracks, setTracks] = useState([]);
-  const [grid, setGrid] = useState([]);
-  const [tool, setTool] = useState("none");
-  // The captured frame lives in the page, not in this view, so it survives a switch
-  // to another tab and is still here when the live view comes back.
-  const snapshotRef = useRef(snapshot);
-  snapshotRef.current = snapshot;
-  const setSnapshot = useCallback(
-    (next) => {
-      snapshotRef.current = next;
-      onSnapshotChange?.(next);
-    },
-    [onSnapshotChange]
-  );
-  const [snapshotSize, setSnapshotSize] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [detector, setDetector] = useState({ state: "idle" });
+  const [perf, setPerf] = useState({ fps: 0, ms: 0, tiled: false });
+  const [counts, setCounts] = useState({ vehicles: 0, free: 0, occupied: 0 });
+  const [tiling, setTiling] = useState("auto"); // auto | on | off
+  const [tool, setTool] = useState(null);
+  const [draft, setDraft] = useState([]);
+  const [rowCount, setRowCount] = useState(8);
+  const [groundSize, setGroundSize] = useState({ width: 60, length: 40 });
   const [frameRect, setFrameRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
-  const scanningRef = useRef(false);
-  const remoteImgRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const [remoteVideoPlaying, setRemoteVideoPlaying] = useState(false);
-  const displayedCodeRef = useRef("");
-  const snapshotImgRef = useRef(null);
-  const facingRef = useRef("environment");
-  const readingRef = useRef(false);
-  const autoLayoutRef = useRef([]);
-  const mapLotRef = useRef(null);
-  const mappingRef = useRef(false);
-  const detectorRef = useRef(createDetectionState());
   const [remoteOpen, setRemoteOpen] = useState(false);
-  const localTrackerRef = useRef(createTrackState());
-  const trackerRef = trackingStateRef || localTrackerRef;
-  const lastReadAtRef = useRef(0);
-  const scanContextRef = useRef(null);
-  const zonesRef = useRef([]);
-  const issuedRef = useRef(new Set());
-  const remote = useRemoteCamera(remoteCode, remoteRole);
-  const { frame: remoteFrame, stream: remoteStream, cameras: remoteCameras, receiving: remoteReceiving } = remote;
-  const useRemoteVideo = Boolean(remoteStream && remoteVideoPlaying);
-  const remoteActive = Boolean(useRemoteVideo || remoteFrame);
-  const streaming = active || remoteActive || Boolean(snapshot);
-  usePhoneFrames(videoRef, active && remoteRole === "camera" && remote.connected, remote.sendFrame);
+  const [aiBusy, setAiBusy] = useState(false);
 
-  const displayPhonePicture = () => {
-    measure();
-    remote.acknowledge();
-    setRemoteOpen(false);
-    if (displayedCodeRef.current === remoteCode) return;
-    displayedCodeRef.current = remoteCode;
-    setSnapshot(null);
-    setSnapshotSize(null);
-    onPhoneDisplay?.();
+  const remote = useRemoteCamera(source === "phone" ? remoteCode : "", "viewer");
+  const [phoneVideoPlaying, setPhoneVideoPlaying] = useState(false);
+
+  const trackerRef = useRef(createTracker());
+  const occupancyRef = useRef(createOccupancy());
+  const issuedRef = useRef(new Set()); // IDs handed out in this camera session
+  const liveRef = useRef({ tracks: [], pending: [], statuses: new Map(), lastBoxes: [] });
+  const cursorRef = useRef(null);
+  const calRef = useRef(calibration);
+  calRef.current = calibration;
+  const lotRef = useRef(lot);
+  lotRef.current = lot;
+  const assignRef = useRef(assignVehicleId);
+  assignRef.current = assignVehicleId;
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+
+  useEffect(() => onDetectorStatus(setDetector), []);
+
+  // ---------------------------------------------------------------- sources
+  const media = useCallback(() => {
+    if (frozen && frozenRef.current) return frozenRef.current;
+    if (source === "webcam") return webcamRef.current;
+    if (source === "video") return fileVideoRef.current;
+    if (source === "image") return fileImgRef.current;
+    if (source === "phone") return phoneVideoPlaying ? phoneVideoRef.current : phoneImgRef.current;
+    return null;
+  }, [source, frozen, phoneVideoPlaying]);
+  const mediaRef = useRef(media);
+  mediaRef.current = media;
+
+  const mediaSize = (el) => ({
+    width: el?.videoWidth || el?.naturalWidth || el?.width || 0,
+    height: el?.videoHeight || el?.naturalHeight || el?.height || 0,
+  });
+  const mediaReady = (el) => {
+    if (!el) return false;
+    if (el instanceof HTMLVideoElement) return el.readyState >= 2 && el.videoWidth > 0;
+    if (el instanceof HTMLImageElement) return el.complete && el.naturalWidth > 0;
+    return el.width > 0;
   };
 
-  useEffect(() => {
-    if (remote.calibration) onCalibrationChange?.(remote.calibration);
-  }, [remote.calibration, onCalibrationChange]);
-  useEffect(() => {
-    if (!remote.spots) return;
-    onLockLayout?.(remote.spots);
-    onSpotsUpdate?.(remote.spots);
-    setCaptured(remote.spots.length > 0);
-    if (calibration?.spot && calibration?.boundaries?.length) {
-      const statuses = new Map(remote.spots.map((spot) => [spot.id, spot.status]));
-      setGrid(buildSpotGrid(calibration.spot, calibration.boundaries).map((cell, i) => ({
-        ...cell, status: statuses.get(`cam-${i}`) || cell.status,
-      })));
-    }
-  }, [remote.spots, onLockLayout, onSpotsUpdate, calibration]);
-  useEffect(() => {
-    if (remote.snapshot) { setSnapshot(remote.snapshot.data); setSnapshotSize(null); }
-  }, [remote.snapshot]);
+  const resetTracking = useCallback(() => {
+    trackerRef.current.reset();
+    occupancyRef.current.reset();
+    issuedRef.current = new Set();
+    liveRef.current = { tracks: [], pending: [], statuses: new Map(), lastBoxes: [] };
+    setCounts({ vehicles: 0, free: 0, occupied: 0 });
+    onUpdateRef.current?.({ tracks: [], statuses: new Map(), events: [], streaming: false });
+  }, []);
 
-  const openRemote = () => {
-    if (!remoteCode) onRemoteCodeChange?.(makePairCode());
-    setRemoteOpen(true);
-  };
-  const stopRemote = () => {
-    remote.endSession();
-    onRemoteCodeChange?.("");
-    setRemoteOpen(false);
-    setSnapshot(null);
-    setSnapshotSize(null);
-    setTool("none");
-  };
-
-  const spotBox = calibration?.spot || null;
-  const boundaries = calibration?.boundaries || EMPTY_LIST;
-  const streets = calibration?.streets || EMPTY_LIST;
-  zonesRef.current = calibration?.zones || EMPTY_LIST;
-  scanContextRef.current = { spotBox, boundaries };
-
-  const updateCalibration = (next) => {
-    onCalibrationChange?.(next);
-    remote.publishCalibration(next);
-  };
-
-  // The video letterboxes inside its box; keep the overlay exactly on the picture.
-  const measure = useCallback(() => {
-    const el = boxRef.current;
-    if (!el) return;
-    const video = useRemoteVideo ? remoteVideoRef.current : videoRef.current;
-    const img = snapshot ? snapshotImgRef.current : !useRemoteVideo ? remoteImgRef.current : null;
-    const useImage = Boolean(snapshot || (!useRemoteVideo && remoteFrame));
-    const vw = useImage ? img?.naturalWidth : video?.videoWidth;
-    const vh = useImage ? img?.naturalHeight : video?.videoHeight;
-    if (!vw || !vh) return;
-    const cw = el.clientWidth;
-    const ch = el.clientHeight;
-    const ratio = vw / vh;
-    const width = cw / ch > ratio ? ch * ratio : cw;
-    const height = cw / ch > ratio ? ch : cw / ratio;
-    setFrameRect({ left: (cw - width) / 2, top: (ch - height) / 2, width, height });
-  }, [remoteActive, useRemoteVideo, snapshot]);
-
-  useEffect(() => {
-    setRemoteVideoPlaying(false);
-    const video = remoteVideoRef.current;
-    if (!video) return;
-    video.srcObject = remoteStream || null;
-    if (remoteStream) video.play().catch(() => setScanError("Click the phone picture to start playback."));
-  }, [remoteStream]);
-
-  useEffect(() => {
-    if (!streaming) return;
-    measure();
-    const observer = new ResizeObserver(measure);
-    if (boxRef.current) observer.observe(boxRef.current);
-    return () => observer.disconnect();
-  }, [streaming, measure]);
-
-  const startCamera = async () => {
+  const stopAll = useCallback(() => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    if (fileUrl) URL.revokeObjectURL(fileUrl);
+    setFileUrl(null);
+    setFrozen(false);
+    setSource(SOURCES_IDLE);
     setError(null);
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    resetTracking();
+  }, [fileUrl, resetTracking]);
+
+  const startWebcam = async (facing = "environment") => {
+    stopAll();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facingRef.current, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setActive(true);
-      setTimeout(measure, 300);
-    } catch (err) {
-      setError(err.message || "Could not access camera");
-    }
-  };
-
-  const stopCamera = (resetTracking = true) => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-    setActive(false);
-    setScanning(false);
-    setTool("none");
-    setTracks([]);
-    setCars([]);
-    if (resetTracking) trackerRef.current = createTrackState();
-    detectorRef.current = createDetectionState();
-    scanningRef.current = false;
-  };
-
-  // Capture whichever source is actually on screen, including the phone feed.
-  const captureFrame = async () => {
-    if (remoteFrameRef.current && !remoteStreamRef.current && !snapshotRef.current) {
-      setSnapshot(remoteFrameRef.current);
-      setSnapshotSize(null);
-      remote.sendSnapshot(remoteFrameRef.current);
-      return;
-    }
-    const frame = await frameSource();
-    if (!frame) return;
-    const image = captureCameraImage(frame.source, frame.width, frame.height);
-    setSnapshot(image.data);
-    setSnapshotSize({ width: image.width, height: image.height });
-    remote.sendSnapshot(image.data);
-  };
-
-  useEffect(() => { if (autoStart) startCamera(); }, [autoStart]);
-  useEffect(() => () => stopCamera(false), []);
-
-  // The still frame (if captured) or the live video, in its own pixel size.
-  // Frame sources live in refs so a streaming phone does not re-arm detection
-  // on every frame it delivers.
-  const snapshotSizeRef = useRef(snapshotSize);
-  const remoteFrameRef = useRef(remoteFrame);
-  const remoteStreamRef = useRef(null);
-  remoteStreamRef.current = useRemoteVideo ? remoteStream : null;
-  snapshotSizeRef.current = snapshotSize;
-  remoteFrameRef.current = remoteFrame;
-
-  const frameSource = useCallback(async () => {
-    const still = snapshotRef.current;
-    if (still) {
-      const img = new window.Image();
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
-        img.src = still;
+      setSource("webcam");
+      requestAnimationFrame(() => {
+        if (webcamRef.current) {
+          webcamRef.current.srcObject = stream;
+          webcamRef.current.play().catch(() => {});
+        }
       });
-      return {
-        source: img,
-        width: img.naturalWidth || snapshotSizeRef.current?.width || 0,
-        height: img.naturalHeight || snapshotSizeRef.current?.height || 0,
-      };
+    } catch (err) {
+      setError(err?.message || "Could not open the camera");
     }
-    if (remoteStreamRef.current) {
-      const video = remoteVideoRef.current;
-      if (video?.readyState >= 2 && video.videoWidth) return freezeDetectionFrame(video, video.videoWidth, video.videoHeight);
-    }
-    if (remoteFrameRef.current) {
-      const img = remoteImgRef.current;
-      if (!img || !img.complete || !img.naturalWidth) return null;
-      return freezeDetectionFrame(img, img.naturalWidth, img.naturalHeight);
-    }
-    const video = videoRef.current;
-    if (!video || !video.videoWidth) return null;
-    return freezeDetectionFrame(video, video.videoWidth, video.videoHeight);
-  }, []);
-
-  // One layout feeds the map, the status panel and the paired phone. It is only
-  // sent when a stall actually changed, so a quiet lot stays quiet.
-  const layoutSignatureRef = useRef("");
-  const publishLayout = (spots) => {
-    if (!spots.length) return;
-    const layout = spots.map((sp, i) => ({
-      id: `cam-${i}`,
-      x: Number(sp.x) || 50,
-      y: Number(sp.y) || 50,
-      status: sp.status || "free",
-      label: `${sp.row ?? "A"}${sp.index ?? i + 1}`,
-      confidence: sp.confidence,
-    }));
-    const signature = layout.map((s) => s.status).join("");
-    if (signature === layoutSignatureRef.current) return;
-    layoutSignatureRef.current = signature;
-    onLockLayout?.(layout);
-    onSpotsUpdate?.(layout);
-    remote.publishSpots(layout);
-    setCaptured(true);
   };
-  const publishLayoutRef = useRef(null);
-  publishLayoutRef.current = publishLayout;
 
-  // One tracking beat: the vehicles just found are matched to the vehicles already
-  // being followed, so a car keeps its temporary ID while it drives across the lot
-  // and from one camera zone into the next.
-  const trackStepRef = useRef(null);
-  trackStepRef.current = (found, cells, observedSources) => {
-    const result = stepTracks(trackerRef.current, {
-      detections: found,
-      observedSources,
-      singleFrame: Boolean(snapshotRef.current),
-      zones: zonesRef.current,
-      cells,
-      now: Date.now(),
-      // Two cars stamped in the same beat must never share an ID, so the IDs
-      // already handed out in this session are passed in with the request.
-      assignId: () => {
-        const issued = [...issuedRef.current];
-        const id = assignVehicleId
-          ? assignVehicleId(issued)
-          : `SP-${String(issued.length + 1).padStart(3, "0")}`;
-        issuedRef.current.add(id);
+  const openFile = (file) => {
+    if (!file) return;
+    stopAll();
+    const url = URL.createObjectURL(file);
+    setFileUrl(url);
+    setSource(file.type.startsWith("video/") ? "video" : "image");
+  };
+
+  const openPhone = () => {
+    stopAll();
+    if (!remoteCode) onRemoteCodeChange?.(makePairCode());
+    setSource("phone");
+    setRemoteOpen(true);
+  };
+
+  useEffect(() => {
+    const video = phoneVideoRef.current;
+    setPhoneVideoPlaying(false);
+    if (!video) return;
+    video.srcObject = remote.stream || null;
+    if (remote.stream) video.play().catch(() => {});
+  }, [remote.stream]);
+
+  useEffect(() => () => streamRef.current?.getTracks().forEach((t) => t.stop()), []);
+  useEffect(() => { preloadDetector(); }, []);
+
+  // Paste an image/video straight into the page.
+  useEffect(() => {
+    const onPaste = (e) => {
+      if (!visible) return;
+      const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/") || i.type.startsWith("video/"));
+      if (item) openFile(item.getAsFile());
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  });
+
+  const freeze = () => {
+    if (frozen) { setFrozen(false); return; }
+    const el = mediaRef.current();
+    if (!mediaReady(el)) return;
+    const { width, height } = mediaSize(el);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d").drawImage(el, 0, 0, width, height);
+    frozenRef.current = canvas;
+    setFrozen(true);
+  };
+
+  // ------------------------------------------------------------- layout fit
+  const measure = useCallback(() => {
+    const stage = stageRef.current;
+    const el = mediaRef.current();
+    if (!stage) return;
+    const { width: vw, height: vh } = mediaSize(el);
+    if (!vw || !vh) return;
+    const cw = stage.clientWidth, ch = stage.clientHeight;
+    const ratio = vw / vh;
+    const width = cw / ch > ratio ? ch * ratio : cw;
+    const height = cw / ch > ratio ? ch : cw / ratio;
+    setFrameRect((prev) => {
+      const next = { left: (cw - width) / 2, top: (ch - height) / 2, width, height };
+      return Math.abs(prev.width - next.width) < 0.5 && Math.abs(prev.left - next.left) < 0.5 && Math.abs(prev.top - next.top) < 0.5 ? prev : next;
+    });
+    // Keep the frame aspect in the calibration (used when no ground plane is set).
+    const aspect = Math.round((vw / vh) * 1000) / 1000;
+    if (Math.abs((calRef.current?.aspect || 0) - aspect) > 0.01 && !calRef.current?.sample) {
+      onCalibrationChange?.({ ...calRef.current, aspect });
+    }
+  }, [onCalibrationChange]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(stage);
+    const timer = setInterval(measure, 1000);
+    return () => { observer.disconnect(); clearInterval(timer); };
+  }, [measure]);
+
+  // ---------------------------------------------------------- detection loop
+  const still = source === "image" || frozen;
+  const process = useCallback((result, isStill) => {
+    const cal = calRef.current;
+    const lotNow = lotRef.current;
+    const view = cal.view || "angled";
+    const now = Date.now();
+    const { tracks, events } = trackerRef.current.update(result.boxes, {
+      now,
+      still: isStill,
+      assignId: (taken) => {
+        const id = assignRef.current?.([...taken, ...issuedRef.current]);
+        if (id) issuedRef.current.add(id);
         return id;
       },
+      toGround: (box) => lotNow.toLot(groundPoint(box, view)),
+      metersPerUnit: lotNow.metersPerUnit,
+      hasStalls: cal.stalls.length > 0,
+      locateAll: (list) => {
+        const byStall = assignVehiclesToStalls(cal.stalls, list, view);
+        const out = new Map();
+        for (const [stallId, { vehicle }] of byStall) out.set(vehicle.key, cal.stalls.find((st) => st.id === stallId));
+        return out;
+      },
     });
-    trackerRef.current = result.state;
-    setTracks(result.tracks);
-    // The vehicles counted on the frame are exactly the ones occupancy was decided from.
-    setCars(found);
-    onTracksUpdate?.(result.tracks, result.events);
-  };
-
-  // Recognition is the only writer of vehicle geometry.
-  const readFrame = useCallback(async (frame, cells, { forceVision = false } = {}) => {
-    const result = await detectCameraVehicles(detectorRef.current, frame, {
-      forceVision,
-      still: Boolean(snapshotRef.current),
-    });
-    return { ...result, spots: occupancyFromCars(cells, result.cars) };
+    // Hidden parked cars still occupy their stall; lost moving ones do not.
+    const present = tracks.filter((t) => t.state !== "lost" || t.motion === "parked");
+    const statuses = occupancyRef.current.update(cal.stalls, present, { view, now, still: isStill });
+    liveRef.current = { tracks, pending: trackerRef.current.pending(), statuses, lastBoxes: result.boxes };
+    const occupied = [...statuses.values()].filter((s) => s.status === "occupied").length;
+    setCounts({ vehicles: tracks.filter((t) => t.state !== "lost").length, occupied, free: statuses.size - occupied });
+    onUpdateRef.current?.({ tracks, statuses, events, streaming: true, still: isStill });
   }, []);
 
-  // The one box drawn on the lot is only the size of a stall: the stalls are tiled
-  // from it, and every one of them is then decided by the vehicles the AI finds.
-  const applyStallSize = (box) => {
-    updateCalibration({ ...calibration, spot: box, spotRef: null, occupied: null, occupiedRef: null });
-    setCars([]);
-    setTool("none");
-    if (!box || !boundaries.length) return;
-    const cells = buildSpotGrid(box, boundaries);
-    setGrid(cells);
-    publishLayout(cells);
-  };
-
-  // With no mapped lot there are no stalls to measure, so the frame is mapped
-  // once by the AI instead.
-  const mapLotWithAI = async (frame) => {
-    const canvas = document.createElement("canvas");
-    canvas.width = frame.width;
-    canvas.height = frame.height;
-    canvas.getContext("2d").drawImage(frame.source, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
-    if (!blob) throw new Error("Could not grab a frame from the camera");
-    const file = new File([blob], `frame-${Date.now()}.jpg`, { type: "image/jpeg" });
-    const { file_uri, file_url } = await scanFrameFile(file);
-    const { data } = await base44.functions.invoke("analyzeParkingFrame", {
-      file_uri,
-      file_url,
-      width: canvas.width,
-      height: canvas.height,
-      layout_only: true,
-    });
-    return data?.spots || [];
-  };
-  mapLotRef.current = mapLotWithAI;
-
-  const scanFrame = useCallback(async () => {
-    if (scanningRef.current || readingRef.current) return;
-    scanningRef.current = true;
-    readingRef.current = true;
-    setScanning(true);
-    setScanError(null);
-    remote.publishScan(true);
-    let failure = null;
-    try {
-      const cells = spotBox && boundaries.length ? buildSpotGrid(spotBox, boundaries) : [];
-      const frame = await frameSource();
-      if (!frame) {
-        failure = "Camera is still warming up — try again in a second.";
-        setScanError(failure);
-        return;
-      }
-
-      const detector = detectorRef.current;
-      const result = await readFrame(frame, cells, { forceVision: true });
-      if (detector !== detectorRef.current) return;
-      setScanError(result.warning || null);
-      trackStepRef.current?.(result.cars, cells, result.observedSources);
-      let spots = result.spots;
-      if (!cells.length) {
-        // Layout mapping is separate; it never supplies vehicle boxes or occupancy.
-        const mapped = await mapLotWithAI(frame);
-        if (detector !== detectorRef.current) return;
-        autoLayoutRef.current = mapped;
-        spots = occupancyFromCars(mapped, result.cars);
-      }
-
-      setGrid(spots);
-      layoutSignatureRef.current = "";
-      publishLayout(spots);
-      onFrameUpdate?.();
-    } catch (err) {
-      console.error("Frame analysis failed", err);
-      failure = err?.message || "Could not analyze this frame";
-      setScanError(failure);
-    } finally {
-      lastReadAtRef.current = Date.now();
-      setScanning(false);
-      scanningRef.current = false;
-      readingRef.current = false;
-      remote.publishScan(false, failure);
-    }
-  }, [onFrameUpdate, spotBox, boundaries, frameSource, readFrame]);
-
-  // One serialized scan, then a three-second rest. Incoming phone frames, layout
-  // edits and ordinary renders cannot re-arm the timer or start another scan.
   useEffect(() => {
-    if (!streaming) return undefined;
+    if (source === SOURCES_IDLE) return undefined;
     let cancelled = false;
-    let timer;
-    const read = async () => {
-      if (cancelled) return;
-      const remaining = SCAN_PAUSE_MS - (Date.now() - lastReadAtRef.current);
-      if (readingRef.current || remaining > 0) {
-        timer = setTimeout(read, Math.max(SCAN_PAUSE_MS, remaining));
-        return;
-      }
-      readingRef.current = true;
-      setDetecting(true);
-      const detector = detectorRef.current;
-      try {
-        const frame = await frameSource();
-        if (!frame || cancelled) return;
-        const { spotBox: spot, boundaries: areas } = scanContextRef.current;
-        let cells = spot && areas.length ? buildSpotGrid(spot, areas) : autoLayoutRef.current;
-        // Without a drawn layout the lot is mapped once from the live frame, so the
-        // occupancy grid follows the feed instead of holding an earlier result.
-        if (!cells.length && !mappingRef.current) {
-          mappingRef.current = true;
-          try {
-            const mapped = await mapLotRef.current?.(frame);
-            if (mapped?.length) autoLayoutRef.current = mapped;
-            cells = mapped || [];
-          } finally {
-            mappingRef.current = false;
+    let lastStillKey = "";
+    let frames = 0;
+    let windowStart = performance.now();
+    let cycle = 0;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    (async () => {
+      while (!cancelled) {
+        const el = mediaRef.current();
+        if (!mediaReady(el)) { await sleep(150); continue; }
+        const isStill = source === "image" || frozen;
+        const key = isStill ? `${source}:${frozen}:${fileUrl}` : "";
+        if (isStill && key === lastStillKey) { await sleep(250); continue; }
+        cycle += 1;
+        // Small-vehicle boost (tiled pass): always on photos; on video every frame
+        // with a GPU, otherwise every 4th frame so tracking stays responsive.
+        const tiles = tiling === "on" || isStill || (tiling === "auto" && (detector.backend === "webgpu" || cycle % 4 === 0));
+        try {
+          const result = await detectVehiclesLocal(el, { tiles: tiling === "off" && !isStill ? false : tiles });
+          if (cancelled) break;
+          process(result, isStill);
+          if (isStill) lastStillKey = key;
+          frames += 1;
+          const elapsed = performance.now() - windowStart;
+          if (elapsed > 1500) {
+            setPerf({ fps: Math.round((frames / elapsed) * 10000) / 10, ms: Math.round(result.ms), tiled: result.tiled });
+            frames = 0;
+            windowStart = performance.now();
           }
-          if (cancelled) return;
+          setError(null);
+        } catch (err) {
+          if (cancelled) break;
+          setError(err?.message || "Vehicle detection failed");
+          await sleep(1500);
         }
-        const result = await readFrame(frame, cells);
-        if (cancelled || detector !== detectorRef.current) return;
-        setScanError(result.warning || null);
-        trackStepRef.current?.(result.cars, cells, result.observedSources);
-        setGrid(result.spots);
-        publishLayoutRef.current?.(result.spots);
-      } catch (err) {
-        if (!cancelled) setScanError(err?.message || "The vehicle detector could not run.");
-      } finally {
-        lastReadAtRef.current = Date.now();
-        readingRef.current = false;
-        if (!cancelled) {
-          setDetecting(false);
-          if (!snapshot) timer = setTimeout(read, SCAN_PAUSE_MS);
-        }
+        await sleep(isStill ? 50 : 10);
       }
-    };
-    read();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [streaming, snapshot, frameSource, readFrame]);
+    })();
+    return () => { cancelled = true; };
+  }, [source, frozen, fileUrl, tiling, detector.backend, process]);
 
-  const calibrated = Boolean(spotBox && boundaries.length);
+  // New camera->plan mapping: old trails are in the old plan coordinates.
+  useEffect(() => { trackerRef.current.clearTrails(); }, [lot]);
+
+  // Calibration changed: re-decide stalls from the vehicles already found.
+  useEffect(() => {
+    if (source === SOURCES_IDLE) return;
+    const { tracks } = liveRef.current;
+    const view = calibration.view || "angled";
+    occupancyRef.current.reset();
+    const present = tracks.filter((t) => t.state !== "lost" || t.motion === "parked");
+    const statuses = occupancyRef.current.update(calibration.stalls, present, { view, still: true });
+    liveRef.current = { ...liveRef.current, statuses };
+    const occupied = [...statuses.values()].filter((s) => s.status === "occupied").length;
+    setCounts((c) => ({ ...c, occupied, free: statuses.size - occupied }));
+    onUpdateRef.current?.({ tracks, statuses, events: [], streaming: true, still });
+  }, [calibration.stalls, calibration.view]);
+
+  // --------------------------------------------------------------- drawing
+  useEffect(() => {
+    let raf;
+    const draw = () => {
+      const canvas = canvasRef.current;
+      if (canvas && frameRect.width) {
+        const dpr = window.devicePixelRatio || 1;
+        const w = Math.round(frameRect.width * dpr), h = Math.round(frameRect.height * dpr);
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const t = tool ? TOOLS[tool] : null;
+        let preview = [];
+        if (tool === "row" && draft.length === 3 && cursorRef.current) {
+          preview = makeStallRow([...draft, cursorRef.current], Math.max(1, rowCount), "?").map((s) => s.poly);
+        }
+        drawOverlay(ctx, {
+          width: frameRect.width,
+          height: frameRect.height,
+          calibration: calRef.current,
+          statuses: liveRef.current.statuses,
+          tracks: liveRef.current.tracks,
+          pending: liveRef.current.pending,
+          lotToCamera: lotRef.current?.toCamera,
+          draft: t && t.points ? { points: draft, cursor: cursorRef.current, color: t.color, closed: t.points === 4, preview, labels: tool === "ground" ? ["1", "2", "3", "4"] : tool === "row" || tool === "stall" ? ["FL", "FR", "BR", "BL"] : null } : null,
+        });
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [frameRect, tool, draft, rowCount]);
+
+  // --------------------------------------------------------------- tools
+  const pointFrom = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100)),
+      y: Math.max(0, Math.min(100, ((e.clientY - r.top) / r.height) * 100)),
+    };
+  };
+
+  const update = (patch) => onCalibrationChange?.({ ...calRef.current, ...patch, sample: false });
+
+  const finishLane = (points = draft) => {
+    if (points.length >= 2) update({ lanes: [...calibration.lanes, { id: `lane-${Date.now()}`, points }] });
+    setDraft([]);
+  };
+
+  const commit = (points) => {
+    const cal = calRef.current;
+    if (tool === "row" || tool === "stall") {
+      const row = nextRowLetter(cal.stalls);
+      const stalls = makeStallRow(points, tool === "row" ? Math.max(1, Math.min(60, rowCount)) : 1, row);
+      update({ stalls: [...cal.stalls, ...stalls] });
+    } else if (tool === "entrance") update({ entrance: points[0] });
+    else if (tool === "exit") update({ exit: points[0] });
+    else if (tool === "ground") update({ ground: { quad: points, width: groundSize.width, length: groundSize.length } });
+    setDraft([]);
+    if (tool === "entrance" || tool === "exit" || tool === "ground") setTool(null);
+  };
+
+  const onPointerDown = (e) => {
+    if (!tool) return;
+    e.preventDefault();
+    const p = pointFrom(e);
+    if (tool === "erase") {
+      const cal = calRef.current;
+      const stall = [...cal.stalls].reverse().find((s) => pointInPolygon(p, s.poly));
+      if (stall) { update({ stalls: cal.stalls.filter((s) => s.id !== stall.id) }); return; }
+      const lane = cal.lanes.find((l) => l.points.some((a, i) => i && projectOnSegment(p, l.points[i - 1], a).distance < 1.5));
+      if (lane) update({ lanes: cal.lanes.filter((l) => l !== lane) });
+      return;
+    }
+    const spec = TOOLS[tool];
+    const next = [...draft, p];
+    if (next.length >= spec.points) commit(next);
+    else setDraft(next);
+  };
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!tool) return;
+      if (e.key === "Escape") { setDraft([]); setTool(null); }
+      if (e.key === "Enter" && tool === "lane") finishLane();
+      if (e.key === "Backspace" && draft.length) setDraft(draft.slice(0, -1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // Stalls learned from cars that are parked right now.
+  const learnStalls = () => {
+    const cal = calRef.current;
+    const view = cal.view || "angled";
+    const parked = liveRef.current.tracks.filter((t) => t.state !== "lost" && (still || t.motion !== "moving"));
+    const rows = [];
+    // Group by vertical position into rows, then number left to right.
+    [...parked].sort((a, b) => groundPoint(a, view).y - groundPoint(b, view).y).forEach((t) => {
+      const g = groundPoint(t, view);
+      const row = rows.find((r) => Math.abs(r.y - g.y) < t.h * 0.5);
+      if (row) { row.items.push(t); row.y = (row.y * (row.items.length - 1) + g.y) / row.items.length; } else rows.push({ y: g.y, items: [t] });
+    });
+    const added = [];
+    let stalls = [...cal.stalls];
+    rows.forEach((r) => {
+      const letter = nextRowLetter(stalls);
+      let index = 1;
+      r.items.sort((a, b) => a.x - b.x).forEach((t) => {
+        if (stallUnder(stalls, t, view)) return;
+        const stall = stallFromVehicle(t, view, letter, index++);
+        if (stalls.some((s) => iou(boxOfPoly(s.poly), boxOfPoly(stall.poly)) > 0.3)) return;
+        stalls.push(stall);
+        added.push(stall);
+      });
+    });
+    if (added.length) update({ stalls });
+    setNotice(added.length ? `Added ${added.length} stall${added.length === 1 ? "" : "s"} from parked cars.` : "No parked cars outside existing stalls. Cars must be standing still for a few seconds.");
+  };
+
+  // Painted stall layout read by the cloud vision model (optional).
+  const aiMapStalls = async () => {
+    const el = mediaRef.current();
+    if (!mediaReady(el)) return;
+    setAiBusy(true);
+    setNotice(null);
+    try {
+      const { width, height } = mediaSize(el);
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      canvas.getContext("2d").drawImage(el, 0, 0, width, height);
+      const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.9));
+      const file = new File([blob], `frame-${Date.now()}.jpg`, { type: "image/jpeg" });
+      const { file_uri, file_url } = await scanFrameFile(file);
+      const { data } = await base44.functions.invoke("analyzeParkingFrame", { file_uri, file_url, width, height, layout_only: true });
+      const stalls = stallsFromCenters(data?.spots || []);
+      if (!stalls.length) throw new Error("The AI did not find painted stalls in this frame");
+      update({ stalls: [...calRef.current.stalls.filter((s) => s.learned), ...stalls] });
+      setNotice(`AI mapped ${stalls.length} stalls. Check them and fix any with Erase / Stall row — hand-drawn rows are the most accurate.`);
+    } catch (err) {
+      setNotice(err?.message || "AI stall mapping failed");
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const streaming = source !== SOURCES_IDLE;
+  const spec = tool ? TOOLS[tool] : null;
+  const hint = spec ? spec.hint[Math.min(draft.length, spec.hint.length - 1)] : null;
 
   return (
-    <div className="flex w-full h-full min-h-0 flex-col gap-2 overflow-hidden">
-      <div
-        ref={boxRef}
-        className="relative w-full flex-1 min-h-0 rounded-lg overflow-hidden border border-neutral-800 bg-black flex items-center justify-center"
-      >
-      <video
-        ref={videoRef}
-        playsInline
-        muted
-        onLoadedMetadata={measure}
-        className="w-full h-full object-contain"
-        style={{ display: active && !remoteActive ? "block" : "none" }}
-      />
-      <video
-        ref={remoteVideoRef}
-        autoPlay
-        playsInline
-        muted
-        onLoadedMetadata={measure}
-        onPlaying={() => { setRemoteVideoPlaying(true); displayPhonePicture(); }}
-        onWaiting={() => setRemoteVideoPlaying(false)}
-        onPause={() => setRemoteVideoPlaying(false)}
-        onEmptied={() => setRemoteVideoPlaying(false)}
-        onClick={(event) => event.currentTarget.play()}
-        className={`absolute inset-0 w-full h-full object-contain ${useRemoteVideo ? "" : "opacity-0 pointer-events-none"}`}
-      />
-
-      {remoteFrame && !useRemoteVideo && (
-        <CameraImage
-          ref={remoteImgRef}
-          src={remoteFrame}
-          alt="Phone camera feed"
-          fittingType="fit"
-          onLoad={displayPhonePicture}
-          className="absolute inset-0 w-full h-full object-contain"
-        />
-      )}
-
-      {snapshot && (
-        <CameraImage
-          ref={snapshotImgRef}
-          src={snapshot}
-          alt="Captured frame"
-          fittingType="fit"
-          onLoad={measure}
-          className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-        />
-      )}
-
-      {/* Everything inside this layer is in percentages of the video frame */}
-      {streaming && (
-        <div
-          className="absolute"
-          style={{
-            left: frameRect.left,
-            top: frameRect.top,
-            width: frameRect.width,
-            height: frameRect.height,
-          }}
-        >
-          {tool !== "none" && <SpotCalibrator
-            tool={tool}
-            spotBox={spotBox}
-            boundaries={boundaries}
-            streets={streets}
-            zones={calibration?.zones || []}
-            entrance={calibration?.entrance}
-            onAddZone={(box) => {
-              const zones = calibration?.zones || [];
-              updateCalibration({
-                ...calibration,
-                zones: [
-                  ...zones,
-                  {
-                    name: String.fromCharCode(65 + zones.length),
-                    camera: `CAM ${zones.length + 1}`,
-                    ...box,
-                  },
-                ],
-              });
-              setTool("none");
-            }}
-            onRemoveZone={(index) =>
-              updateCalibration({
-                ...calibration,
-                zones: (calibration?.zones || []).filter((_, i) => i !== index),
-              })
-            }
-            grid={grid}
-            onEntrance={(point) => {
-              updateCalibration({ ...calibration, entrance: point });
-              setTool("none");
-            }}
-            onSpotBox={applyStallSize}
-            onAddBoundary={(box) => {
-              updateCalibration({ ...calibration, boundaries: [...boundaries, box] });
-              setCars([]);
-            }}
-            onRemoveBoundary={(index) =>
-              updateCalibration({
-                ...calibration,
-                boundaries: boundaries.filter((_, i) => i !== index),
-              })
-            }
-            onAddStreet={(box) =>
-              updateCalibration({ ...calibration, streets: [...streets, box] })
-            }
-            onRemoveStreet={(index) =>
-              updateCalibration({
-                ...calibration,
-                streets: streets.filter((_, i) => i !== index),
-              })
-            }
-          />}
-          {tool === "none" && <TrackBoxes tracks={tracks} />}
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      {/* Source bar */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Btn active={source === "webcam"} onClick={() => (source === "webcam" ? stopAll() : startWebcam())}><Video className="h-3.5 w-3.5" /> Webcam</Btn>
+        <Btn active={source === "phone"} onClick={() => (source === "phone" ? setRemoteOpen(true) : openPhone())}><Smartphone className="h-3.5 w-3.5" /> Phone camera</Btn>
+        <Btn active={source === "image" || source === "video"} onClick={() => fileInputRef.current?.click()}><FileVideo className="h-3.5 w-3.5" /> Photo / video file</Btn>
+        <input ref={fileInputRef} type="file" accept="image/*,video/*" className="hidden" onChange={(e) => { openFile(e.target.files?.[0]); e.target.value = ""; }} />
+        {streaming && source !== "image" && (
+          <Btn active={frozen} onClick={freeze}>{frozen ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />} {frozen ? "Resume" : "Freeze frame"}</Btn>
+        )}
+        {streaming && <Btn onClick={stopAll}><VideoOff className="h-3.5 w-3.5" /> Stop</Btn>}
+        <div className="ml-auto flex items-center gap-2 text-[11px] text-neutral-400">
+          <Cpu className="h-3.5 w-3.5" />
+          <select
+            value={detector.model || "accurate"}
+            onChange={(e) => setDetectorModel(e.target.value)}
+            className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-1 text-[11px] text-neutral-200"
+            title="Detection model"
+          >
+            {Object.entries(MODELS).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+          </select>
+          <select
+            value={tiling}
+            onChange={(e) => setTiling(e.target.value)}
+            className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-1 text-[11px] text-neutral-200"
+            title="Small / distant vehicle boost: also scans four zoomed tiles of the frame"
+          >
+            <option value="auto">Small-car boost: auto</option>
+            <option value="on">Small-car boost: always</option>
+            <option value="off">Small-car boost: off</option>
+          </select>
         </div>
-      )}
-
-      {streaming && (
-        <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/60 backdrop-blur px-2.5 py-1.5 rounded-full">
-          <span
-            className={`w-2 h-2 rounded-full ${
-              snapshot ? "bg-yellow-400" : "bg-red-500 animate-pulse"
-            }`}
-          />
-          <span className="text-[11px] font-mono text-white">
-            {snapshot ? "CAPTURED" : remoteRole === "camera" ? (remoteReceiving ? "PHONE CONNECTED" : "WAITING FOR COMPUTER") : active ? "LIVE" : "PHONE"}
-          </span>
-          {(scanning || detecting) && (
-            <span className="flex items-center gap-1 text-[11px] text-green-400">
-              <Loader2 className="w-3 h-3 animate-spin" /> detecting
-            </span>
-          )}
-        </div>
-      )}
-
-      {streaming && (
-        <div className="absolute top-3 right-3 bg-black/60 backdrop-blur px-2.5 py-1.5 rounded-full text-[11px] font-mono" aria-busy={detecting || scanning}>
-          <span className="text-green-400">
-            {grid.length > 0 && <>{grid.filter((s) => s.status === "occupied").length}/{grid.length} taken · {grid.filter((s) => s.status === "free").length} free · </>}{cars.length} vehicles
-          </span>
-        </div>
-      )}
-
-      {streaming && (scanError || remote.scanError || remote.error) && (
-        <div className="absolute bottom-14 left-1/2 -translate-x-1/2 max-w-[90%] text-center bg-red-500/20 border border-red-500/50 text-red-200 text-[11px] px-3 py-1.5 rounded-full">
-          {scanError || remote.scanError || remote.error}
-        </div>
-      )}
-
-      {!streaming && (
-        <div className="text-center px-6 py-16">
-          {error ? (
-            <>
-              <VideoOff className="w-10 h-10 mx-auto mb-3 text-red-400" />
-              <p className="text-sm text-red-300">{error}</p>
-              <button
-                onClick={startCamera}
-                className="mt-4 text-xs px-4 py-2 rounded border border-green-500 text-green-400 hover:bg-green-500/10"
-              >
-                Try again
-              </button>
-            </>
-          ) : (
-            <>
-              <Video className="w-10 h-10 mx-auto mb-3 text-green-400" />
-              <p className="text-sm text-neutral-300 mb-1">Live feed → simulation</p>
-              <p className="text-xs text-neutral-500 mb-4">
-                Point the camera at vehicles to detect them automatically. Parking-space mapping is optional.
-              </p>
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <button
-                  onClick={startCamera}
-                  className="text-xs px-4 py-2 rounded border border-green-500 text-green-400 hover:bg-green-500/10"
-                >
-                  Start live feed
-                </button>
-                <button
-                  onClick={openRemote}
-                  className="flex items-center gap-1.5 text-xs px-4 py-2 rounded border border-neutral-600 text-neutral-300 hover:border-green-500 hover:text-green-400"
-                >
-                  <Smartphone className="w-3.5 h-3.5" /> Use phone as camera
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
       </div>
 
-      {streaming && (
-        <LiveCameraTools
-          tool={tool}
-          onTool={(next) => {
-            setCars([]);
-            setTool(next);
-          }}
-          canClear={Boolean(
-            spotBox || boundaries.length || streets.length || calibration?.entrance
-          )}
-          onClear={() => {
-            updateCalibration({
-              spot: null,
-              boundaries: [],
-              streets: [],
-              zones: [],
-              entrance: null,
-            });
-            autoLayoutRef.current = [];
-            setGrid([]);
-            setCars([]);
-            setCaptured(false);
-            trackerRef.current = createTrackState();
-            issuedRef.current = new Set();
-                    detectorRef.current = createDetectionState();
-            setTracks([]);
-            onTracksUpdate?.([], []);
-            layoutSignatureRef.current = "";
-            onLockLayout?.([]);
-            onSpotsUpdate?.([]);
-            remote.publishSpots([]);
-          }}
-          snapshot={snapshot}
-          onCapture={() => {
-            if (snapshot) {
-              setSnapshot(null);
-              setSnapshotSize(null);
-              remote.resume();
-            } else {
-              captureFrame();
-            }
-          }}
-          onScan={scanFrame}
-          busy={scanning || remote.scanning || detecting}
-          calibrated={calibrated}
-          captured={captured}
-          onOpenSimulation={onOpenSimulation}
-          active={active}
-          onStop={stopCamera}
-          onStartCamera={() => {
-            // A kept capture would sit over the feed, so it is put away first.
-            setSnapshot(null);
-            setSnapshotSize(null);
-            startCamera();
-          }}
-          remoteRole={remoteRole}
-          remoteOpen={remoteOpen}
-          onOpenRemote={openRemote}
-          onSwitchCamera={() => {
-            facingRef.current = facingRef.current === "environment" ? "user" : "environment";
-            setSnapshot(null);
-            remote.resume();
-            startCamera();
-          }}
+      {/* Stage */}
+      <div ref={stageRef} className="relative min-h-[45vh] flex-1 overflow-hidden rounded-xl border border-neutral-800 bg-black">
+        <video ref={webcamRef} playsInline muted onLoadedMetadata={measure} className="absolute inset-0 h-full w-full object-contain" style={{ display: source === "webcam" && !frozen ? "block" : "none" }} />
+        {source === "video" && fileUrl && (
+          <video ref={fileVideoRef} src={fileUrl} autoPlay loop muted playsInline onLoadedMetadata={measure} className="absolute inset-0 h-full w-full object-contain" style={{ display: frozen ? "none" : "block" }} />
+        )}
+        {source === "image" && fileUrl && (
+          <img ref={fileImgRef} src={fileUrl} alt="Parking lot" onLoad={measure} className="absolute inset-0 h-full w-full object-contain" />
+        )}
+        <video
+          ref={phoneVideoRef}
+          autoPlay playsInline muted
+          onLoadedMetadata={measure}
+          onPlaying={() => { setPhoneVideoPlaying(true); remote.acknowledge(); setRemoteOpen(false); }}
+          onEmptied={() => setPhoneVideoPlaying(false)}
+          className="absolute inset-0 h-full w-full object-contain"
+          style={{ display: source === "phone" && phoneVideoPlaying && !frozen ? "block" : "none" }}
         />
-      )}
+        {source === "phone" && !phoneVideoPlaying && remote.frame && (
+          <img ref={phoneImgRef} src={remote.frame} alt="Phone camera" onLoad={() => { measure(); remote.acknowledge(); }} className="absolute inset-0 h-full w-full object-contain" style={{ display: frozen ? "none" : "block" }} />
+        )}
+        {frozen && frozenRef.current && (
+          <FrozenFrame canvas={frozenRef.current} onReady={measure} />
+        )}
+
+        {streaming && (
+          <div
+            className="absolute"
+            style={{ left: frameRect.left, top: frameRect.top, width: frameRect.width, height: frameRect.height, cursor: tool ? "crosshair" : "default", touchAction: tool ? "none" : "auto" }}
+            onPointerDown={onPointerDown}
+            onPointerMove={(e) => { cursorRef.current = tool ? pointFrom(e) : null; }}
+            onPointerLeave={() => { cursorRef.current = null; }}
+            onDoubleClick={() => tool === "lane" && finishLane(draft.slice(0, -1).length >= 2 ? draft.slice(0, -1) : draft)}
+          >
+            <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
+          </div>
+        )}
+
+        {streaming && (
+          <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-full bg-black/70 px-2.5 py-1 text-[11px] font-mono text-white">
+            <span className={`h-2 w-2 rounded-full ${still ? "bg-yellow-400" : "animate-pulse bg-red-500"}`} />
+            {still ? (source === "image" ? "PHOTO" : "FROZEN") : source === "phone" ? "PHONE" : source === "video" ? "VIDEO" : "LIVE"}
+            {detector.state === "loading" && <span className="flex items-center gap-1 text-cyan-300"><Loader2 className="h-3 w-3 animate-spin" /> loading model</span>}
+            {detector.state === "ready" && !still && <span className="text-neutral-400">{perf.fps} fps · {perf.ms} ms · {detector.backend?.toUpperCase()}</span>}
+          </div>
+        )}
+        {streaming && (
+          <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/70 px-2.5 py-1 font-mono text-[11px] text-green-300">
+            {counts.vehicles} vehicles{calibration.stalls.length > 0 && <> · {counts.occupied}/{calibration.stalls.length} taken · {counts.free} free</>}
+          </div>
+        )}
+        {hint && (
+          <div className="pointer-events-none absolute bottom-3 left-1/2 max-w-[92%] -translate-x-1/2 rounded-full border border-white/20 bg-black/80 px-3 py-1.5 text-center text-[11px] text-white">
+            <b style={{ color: spec.color }}>{spec.label}:</b> {hint} <span className="text-neutral-400">· Esc to cancel{draft.length ? " · Backspace to undo" : ""}</span>
+          </div>
+        )}
+        {(error || remote.error) && (
+          <div className="absolute bottom-12 left-1/2 max-w-[90%] -translate-x-1/2 rounded-full border border-red-500/50 bg-red-500/20 px-3 py-1.5 text-center text-[11px] text-red-200">{error || remote.error}</div>
+        )}
+
+        {!streaming && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+            <ScanSearch className="h-10 w-10 text-green-400" />
+            <p className="text-sm text-neutral-200">Point a camera at the lot, or open a photo or video of it</p>
+            <p className="max-w-md text-xs leading-relaxed text-neutral-500">
+              Vehicles are detected on this device with a YOLO11 model (no upload needed), tracked frame to frame with a
+              stable ID, and matched to the stalls you draw. You can also paste an image (Ctrl/Cmd+V).
+            </p>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Btn onClick={() => startWebcam()}><Video className="h-3.5 w-3.5" /> Start webcam</Btn>
+              <Btn onClick={openPhone}><Smartphone className="h-3.5 w-3.5" /> Use phone as camera</Btn>
+              <Btn onClick={() => fileInputRef.current?.click()}><FileVideo className="h-3.5 w-3.5" /> Open photo / video</Btn>
+            </div>
+            {detector.state === "error" && <p className="text-xs text-red-300">Detector: {detector.error}</p>}
+          </div>
+        )}
+      </div>
+
+      {/* Lot mapping tools */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-[10px] font-semibold tracking-[0.18em] text-neutral-500">MAP THE LOT</span>
+        {Object.entries(TOOLS).map(([key, t]) => (
+          <Btn key={key} disabled={!streaming} active={tool === key} tone={t.color} onClick={() => { setDraft([]); setTool(tool === key ? null : key); }}>
+            <t.icon className="h-3.5 w-3.5" /> {t.label}
+          </Btn>
+        ))}
+        {tool === "row" && (
+          <label className="flex items-center gap-1 text-[11px] text-neutral-300">
+            stalls in row
+            <input type="number" min={1} max={60} value={rowCount} onChange={(e) => setRowCount(Number(e.target.value) || 1)} className="w-14 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-1 text-white" />
+          </label>
+        )}
+        {tool === "lane" && draft.length >= 2 && <Btn onClick={() => finishLane()}>Finish lane</Btn>}
+        {tool === "ground" && (
+          <span className="flex items-center gap-1 text-[11px] text-neutral-300">
+            lot size
+            <input type="number" min={5} value={groundSize.width} onChange={(e) => setGroundSize((s) => ({ ...s, width: Number(e.target.value) || 1 }))} className="w-14 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-1 text-white" /> m wide (1→2) ×
+            <input type="number" min={5} value={groundSize.length} onChange={(e) => setGroundSize((s) => ({ ...s, length: Number(e.target.value) || 1 }))} className="w-14 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-1 text-white" /> m deep (2→3)
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-[10px] font-semibold tracking-[0.18em] text-neutral-500">AUTO</span>
+        <Btn disabled={!streaming} onClick={learnStalls}><Sparkles className="h-3.5 w-3.5" /> Stalls from parked cars</Btn>
+        <Btn disabled={!streaming || aiBusy} onClick={aiMapStalls}>{aiBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />} AI-map painted stalls</Btn>
+        <span className="ml-2 text-[11px] text-neutral-400">Camera view:</span>
+        <Btn active={calibration.view !== "overhead"} onClick={() => update({ view: "angled" })}>Angled</Btn>
+        <Btn active={calibration.view === "overhead"} onClick={() => update({ view: "overhead" })}>Overhead</Btn>
+        <Btn
+          disabled={!calibration.stalls.length && !calibration.lanes.length && !calibration.entrance && !calibration.ground}
+          onClick={() => { if (window.confirm("Remove all stalls, lanes, entrance/exit and the lot corners?")) update({ stalls: [], lanes: [], entrance: null, exit: null, ground: null }); }}
+        >
+          <Trash2 className="h-3.5 w-3.5" /> Clear map
+        </Btn>
+        {notice && <span className="text-[11px] text-cyan-200">{notice}</span>}
+      </div>
 
       <RemoteCameraDialog
         open={remoteOpen}
         onOpenChange={setRemoteOpen}
         code={remoteCode}
         ready={remote.connected}
-        cameras={remoteCameras}
-        receiving={remoteReceiving}
+        cameras={remote.cameras}
+        receiving={remote.receiving}
         error={remote.error}
-        onStop={stopRemote}
-        onNewCode={() => {
-          remote.endSession();
-          setSnapshot(null);
-          setSnapshotSize(null);
-          onRemoteCodeChange?.(makePairCode());
-        }}
+        onStop={() => { remote.endSession(); onRemoteCodeChange?.(""); setRemoteOpen(false); stopAll(); }}
+        onNewCode={() => { remote.endSession(); onRemoteCodeChange?.(makePairCode()); }}
       />
     </div>
+  );
+}
+
+const boxOfPoly = (poly) => {
+  const xs = poly.map((p) => p.x), ys = poly.map((p) => p.y);
+  return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+};
+
+function FrozenFrame({ canvas, onReady }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.width = canvas.width;
+    el.height = canvas.height;
+    el.getContext("2d").drawImage(canvas, 0, 0);
+    onReady?.();
+  }, [canvas, onReady]);
+  return <canvas ref={ref} className="absolute inset-0 h-full w-full object-contain" />;
+}
+
+function Btn({ children, active, onClick, disabled, tone }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+        active ? "border-green-500 bg-green-500/10 text-green-300" : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500 hover:text-white"
+      }`}
+      style={active && tone ? { borderColor: tone, color: tone, backgroundColor: `${tone}1a` } : undefined}
+    >
+      {children}
+    </button>
   );
 }

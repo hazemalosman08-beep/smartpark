@@ -1,73 +1,38 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { Camera, Map, Navigation } from "lucide-react";
 
-function CtrlButton({ children, active, onClick, disabled }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`text-xs px-3 py-1.5 rounded border transition-colors ${
-        active
-          ? "border-green-500 text-green-400 bg-green-500/10"
-          : "border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white"
-      } disabled:opacity-40 disabled:cursor-not-allowed`}
-    >
-      {children}
-    </button>
-  );
-}
+const TABS = [
+  { key: "camera", label: "Camera", icon: Camera, hint: "Detect & map" },
+  { key: "lot", label: "Lot", icon: Map, hint: "Live plan" },
+];
 
-function Hint({ label, children }) {
+export default function TopBar({ tab, setTab, status }) {
   return (
-    <span className="flex items-baseline gap-1.5 text-xs leading-relaxed text-neutral-400">
-      <span className="font-semibold text-green-400">{label}</span>
-      <span className="text-neutral-500">·</span>
-      <span>{children}</span>
-    </span>
-  );
-}
-
-export default function TopBar({ view, setView, addSpots, setAddSpots, onLoadPhoto, onClearSpots, onDetect, detecting, onPresent }) {
-  return (
-    <header className="border-b border-neutral-800 px-4 py-3 flex flex-col gap-2">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-lg font-bold tracking-widest text-green-400">SMARTPARK</h1>
-        <div className="flex items-center gap-2 flex-wrap">
-          <CtrlButton onClick={onLoadPhoto}>Load photo</CtrlButton>
-          <CtrlButton active={view === "photo"} onClick={() => setView("photo")}>Photo</CtrlButton>
-          <CtrlButton active={view === "live"} onClick={() => setView("live")}>Live</CtrlButton>
-          <CtrlButton active={view === "split"} onClick={() => setView("split")}>Split</CtrlButton>
-          <CtrlButton active={view === "grid"} onClick={() => setView("grid")}>Grid</CtrlButton>
-          <CtrlButton active={view === "guide"} onClick={() => setView("guide")}>Guide</CtrlButton>
-          <CtrlButton active={view === "twin"} onClick={() => setView("twin")}>Twin</CtrlButton>
-          <CtrlButton active={addSpots} onClick={() => setAddSpots((v) => !v)}>
-            Add spots: {addSpots ? "ON" : "OFF"}
-          </CtrlButton>
-          <CtrlButton onClick={onClearSpots}>Clear spots</CtrlButton>
-          <CtrlButton onClick={onDetect} disabled={detecting}>
-            {detecting ? "Detecting…" : "Detect spots"}
-          </CtrlButton>
-          <CtrlButton onClick={onPresent}>Exit Present</CtrlButton>
-          <Link
-            to="/find"
-            className="text-xs px-3 py-1.5 rounded border border-green-500/60 text-green-300 hover:bg-green-500/10"
+    <header className="flex flex-wrap items-center gap-3 border-b border-neutral-800 px-4 py-2.5">
+      <h1 className="text-base font-bold tracking-[0.3em] text-green-400">SMARTPARK</h1>
+      <nav className="flex items-center gap-1 rounded-lg border border-neutral-800 bg-neutral-900 p-1" aria-label="Views">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            aria-current={tab === t.key ? "page" : undefined}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              tab === t.key ? "bg-green-500 text-neutral-950" : "text-neutral-300 hover:bg-neutral-800 hover:text-white"
+            }`}
           >
-            Find car app
-          </Link>
-        </div>
-      </div>
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md border border-neutral-800 bg-neutral-900/60 px-3 py-2">
-        <Hint label="Load a lot">
-          Paste a photo (Ctrl/Cmd+V) or use <b className="text-neutral-200">Load photo</b>
-        </Hint>
-        <Hint label="Add a spot">Click the photo</Hint>
-        <Hint label="Change status">
-          Click a spot to cycle Free → Occupied → Blocked
-        </Hint>
-        <Hint label="Delete a spot">Shift+click it</Hint>
-        <Hint label="Rows">Letter automatically from the photo position</Hint>
-        <Hint label="Present">Fullscreen; press Esc to get the controls back</Hint>
-      </div>
+            <t.icon className="h-3.5 w-3.5" /> {t.label}
+            <span className={`hidden text-[10px] sm:inline ${tab === t.key ? "text-neutral-900/70" : "text-neutral-500"}`}>{t.hint}</span>
+          </button>
+        ))}
+      </nav>
+      {status && <span className="text-[11px] text-neutral-400">{status}</span>}
+      <Link
+        to="/find"
+        className="ml-auto flex items-center gap-1.5 rounded-md border border-green-500/60 px-3 py-1.5 text-xs text-green-300 hover:bg-green-500/10"
+      >
+        <Navigation className="h-3.5 w-3.5" /> Find my car
+      </Link>
     </header>
   );
 }

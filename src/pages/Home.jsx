@@ -1,470 +1,254 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Camera, Radio, Shuffle } from "lucide-react";
 import TopBar from "@/components/SmartPark/TopBar";
-import ParkingCanvas from "@/components/SmartPark/ParkingCanvas";
-import StatusPanel from "@/components/SmartPark/StatusPanel";
 import LiveCamera from "@/components/SmartPark/LiveCamera";
-import DriverGuide from "@/components/SmartPark/DriverGuide";
-import LotMap from "@/components/SmartPark/LotMap";
-import LotTwin from "@/components/SmartPark/LotTwin";
-import SessionPanel from "@/components/SmartPark/SessionPanel";
-import SessionDetailDialog from "@/components/SmartPark/SessionDetailDialog";
-import TrackingPanel from "@/components/SmartPark/TrackingPanel";
-import { buildLot, stepLot, recommendSpot } from "@/lib/lotSimulation";
-import { saveLotLayout } from "@/lib/lotLayout";
-import { makeVehicleId } from "@/lib/vehicleSessions";
+import LotView from "@/components/SmartPark/LotView";
+import { EmptyLot, EventLog, GuidanceCard, OccupancyCard, SimulationCard, VehicleList } from "@/components/SmartPark/LotPanel";
 import useVehicleSessions from "@/hooks/useVehicleSessions";
-import { base44 } from "@/api/base44Client";
-import { occupancyFromCars } from "@/lib/carDetect";
-import { createTrackState, stepTracks } from "@/lib/vehicleTracker";
-import { detectVehiclesWithAI } from "@/lib/aiDetect";
-import scanFrameFile from "@/lib/scanFrameFile";
+import { loadLocalCalibration, loadLotLayout, saveLocalCalibration, saveLotLayout } from "@/lib/lotLayout";
+import {
+  EMPTY_CALIBRATION, buildLaneGraph, deriveLot, distancesFrom, normalizeCalibration, pathLength, recommendStall,
+  routeToStall, sampleCalibration,
+} from "@/lib/vision/lot";
+import { createSimulation } from "@/lib/vision/simulation";
 
-const STATUS_CYCLE = ["free", "occupied", "blocked"];
-const STATUS_COLOR = {
-  free: "#4CAF50",
-  occupied: "#F44336",
-  predicted: "#FFEB3B",
-  blocked: "#2196F3",
-};
+const EMPTY_MAP = new Map();
 
 export default function Home() {
-  const [photoUrl, setPhotoUrl] = useState(null);
-  const [photoTracks, setPhotoTracks] = useState([]);
-  const [detectionError, setDetectionError] = useState(null);
-  // The captured frame is held here so it stays put while other tabs are open.
-  const [snapshot, setSnapshot] = useState(null);
-  const [spots, setSpots] = useState([]); // { id, x, y, status, label }
-  const [lockedLayout, setLockedLayout] = useState(null); // fixed spot layout for live detection
+  const [tab, setTab] = useState("camera");
+  const [calibration, setCalibrationState] = useState(() => loadLocalCalibration() || normalizeCalibration(EMPTY_CALIBRATION));
   const [remoteCode, setRemoteCode] = useState("");
-  const [calibration, setCalibration] = useState({
-    spot: null,
-    occupied: null,
-    boundaries: [],
-    streets: [],
-    zones: [],
-    entrance: null,
-  }); // drawn empty spot, full spot, lot boundaries, lanes, camera zones + entrance
-  const [view, setView] = useState("photo"); // photo | split | grid
-  const [addSpots, setAddSpots] = useState(true);
-  const [detecting, setDetecting] = useState(false);
-  const [frame, setFrame] = useState(88992);
-  const [present, setPresent] = useState(false);
-  // The lot only moves on its own when the simulation is switched on, so a
-  // non-live lot keeps a steady occupancy percentage.
-  const [simRunning, setSimRunning] = useState(false);
+  const [live, setLive] = useState({ tracks: [], statuses: EMPTY_MAP, streaming: false });
+  const [events, setEvents] = useState([]);
+  const [source, setSource] = useState("auto"); // auto | camera | sim
+  const [simRunning, setSimRunning] = useState(true);
+  const [simRate, setSimRate] = useState(6);
+  const [sim, setSim] = useState({ tracks: [], statuses: EMPTY_MAP });
+  const [selected, setSelected] = useState(null);
   const vehicleSessions = useVehicleSessions();
-  const [openSession, setOpenSession] = useState(null);
-  const fileInputRef = useRef(null);
-  const idCounter = useRef(0);
-  const photoTrackerRef = useRef(createTrackState());
-  const cameraTrackerRef = useRef(createTrackState());
-  const photoScanRef = useRef(false);
 
-  // Esc to exit present mode
+  // ------------------------------------------------------------ calibration
+  const setCalibration = useCallback((next) => setCalibrationState(normalizeCalibration(next)), []);
+
+  // No local copy: restore the lot map saved on the server.
   useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === "Escape") setPresent(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  const nextId = () => `spot-${idCounter.current++}`;
-
-  // Auto-arrange spots into lettered rows based on y position
-  const arrangeSpots = useCallback((list) => {
-    if (list.length === 0) return list;
-    const sorted = [...list].sort((a, b) => a.y - b.y || a.x - b.x);
-    // group into rows by y proximity
-    const rows = [];
-    sorted.forEach((s) => {
-      const row = rows.find((r) => Math.abs(r[0].y - s.y) < 40);
-      if (row) row.push(s);
-      else rows.push([s]);
-    });
-    rows.sort((a, b) => a[0].y - b[0].y);
-    let labelIdx = 0;
-    const updated = [];
-    rows.forEach((row, ri) => {
-      row.sort((a, b) => a.x - b.x);
-      const letter = String.fromCharCode(65 + ri);
-      row.forEach((s, ci) => {
-        updated.push({ ...s, label: `${letter}${ci + 1}` });
-      });
-    });
-    return updated;
-  }, []);
-
-  const handleAddSpot = (x, y) => {
-    if (!addSpots) return;
-    setSpots((prev) => arrangeSpots([...prev, { id: nextId(), x, y, status: "free", label: "" }]));
-  };
-
-  const handleSpotClick = (id, shift) => {
-    setSpots((prev) =>
-      prev.map((s) => {
-        if (s.id !== id) return s;
-        if (shift) return null; // delete handled below
-        const idx = STATUS_CYCLE.indexOf(s.status);
-        return { ...s, status: STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length] };
-      }).filter(Boolean)
-    );
-  };
-
-  const handleDeleteSpot = (id) => {
-    setSpots((prev) => arrangeSpots(prev.filter((s) => s.id !== id)));
-  };
-
-  const clearSpots = () => {
-    photoTrackerRef.current = createTrackState();
-    setSpots([]);
-    setPhotoTracks([]);
-    setDetectionError(null);
-    setSnapshot(null);
-    setLockedLayout(null);
-    setCalibration({
-      spot: null,
-      occupied: null,
-      boundaries: [],
-      streets: [],
-      zones: [],
-      entrance: null,
-    });
-  };
-
-  const onFileSelected = (file) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      photoTrackerRef.current = createTrackState();
-      setPhotoUrl(e.target.result);
-      setPhotoTracks([]);
-      setDetectionError(null);
-      setSpots([]);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handlePaste = useCallback((e) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    for (const item of items) {
-      if (item.type.startsWith("image/")) {
-        const file = item.getAsFile();
-        onFileSelected(file);
-        break;
-      }
-    }
+    if (loadLocalCalibration()) return;
+    loadLotLayout()
+      .then((saved) => { if (saved?.calibration?.stalls?.length) setCalibrationState(saved.calibration); })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
-    window.addEventListener("paste", handlePaste);
-    return () => window.removeEventListener("paste", handlePaste);
-  }, [handlePaste]);
-
-  // Rescanning the same photo updates its tracks; it does not rename its cars.
-  const runDetection = async () => {
-    if (!photoUrl || photoScanRef.current) return;
-    photoScanRef.current = true;
-    const scanState = photoTrackerRef.current;
-    setDetecting(true);
-    setDetectionError(null);
-    try {
-      const image = new window.Image();
-      image.src = photoUrl;
-      await image.decode();
-      const cars = await detectVehiclesWithAI({ source: image, width: image.naturalWidth, height: image.naturalHeight });
-      if (photoTrackerRef.current !== scanState) return;
-      const tracked = stepTracks(scanState, { detections: cars, singleFrame: true, observedSources: ["vision"] });
-      photoTrackerRef.current = tracked.state;
-      setPhotoTracks(tracked.tracks);
-      setAddSpots(false);
-      const blob = await (await fetch(photoUrl)).blob();
-      const file = new File([blob], "parking.jpg", { type: blob.type || "image/jpeg" });
-      const { file_uri, file_url } = await scanFrameFile(file);
-      const { data } = await base44.functions.invoke("analyzeParkingFrame", { file_uri, file_url, width: image.naturalWidth, height: image.naturalHeight, layout_only: true });
-      if (photoTrackerRef.current !== tracked.state) return;
-      const res = data || {};
-
-      if (res && res.spots) {
-        // Keep actual image coordinates; only detected vehicle bodies decide occupancy.
-        const newSpots = occupancyFromCars(res.spots, cars).map((sp) => {
-          return {
-            id: nextId(),
-            x: sp.x,
-            y: sp.y,
-            status: sp.status,
-            label: `${sp.row}${sp.index}`,
-            confidence: sp.confidence,
-          };
-        });
-        setSpots(newSpots);
-      }
-    } catch (err) {
-      setDetectionError(err?.message || "The vehicle detector could not run.");
-    } finally {
-      photoScanRef.current = false;
-      setDetecting(false);
-      setFrame((f) => f + 1);
-    }
-  };
-
-  // A simulated car gets its own temporary ID, so every car on screen is labelled.
-  const simulateEnter = () => {
-    setSpots((prev) => {
-      const free = prev.find((s) => s.status === "free");
-      if (!free) return prev;
-      const vehicle_id = makeVehicleId(prev.map((s) => s.vehicle_id).filter(Boolean));
-      return prev.map((s) =>
-        s.id === free.id ? { ...s, status: "occupied", vehicle_id } : s
-      );
-    });
-  };
-
-  const simulateLeave = () => {
-    setSpots((prev) => {
-      const occ = prev.find((s) => s.status === "occupied");
-      if (!occ) return prev;
-      return prev.map((s) =>
-        s.id === occ.id ? { ...s, status: "free", vehicle_id: "" } : s
-      );
-    });
-  };
-
-  const handleFrameUpdate = useCallback(() => setFrame((f) => f + 1), []);
-  const handlePhoneDisplay = useCallback(() => setView("live"), []);
-
-  const recommended = useMemo(() => recommendSpot(spots), [spots]);
-
-  // The twin starts empty every time it is opened: it only carries the vehicles
-  // being followed right now plus the ones seen since this page loaded, so IDs
-  // left over from an earlier run never reappear on the map.
-  const twinSinceRef = useRef(Date.now());
-  const lotSessions = useMemo(() => {
-    const labels = new Set(spots.map((s) => String(s.label)));
-    const tracked = new Set(
-      vehicleSessions.tracks.filter((t) => t.vehicle_id).map((t) => t.vehicle_id)
-    );
-    return vehicleSessions.active.filter((s) => {
-      if (spots.length && s.spot_label && !labels.has(String(s.spot_label))) return false;
-      if (tracked.has(s.vehicle_id)) return true;
-      const seen = new Date(s.last_seen_at || s.entry_time || 0).getTime();
-      return seen >= twinSinceRef.current;
-    });
-  }, [spots, vehicleSessions.active, vehicleSessions.tracks]);
-
-  // Opening the twin starts its vehicle list from scratch.
-  useEffect(() => {
-    if (view === "twin") twinSinceRef.current = Date.now();
-  }, [view]);
-
-  // Guide view runs itself: seed a lot on entry, then keep cars moving.
-  useEffect(() => {
-    if (view !== "guide") return;
-    setSpots((prev) => (prev.length ? prev : buildLot()));
-  }, [view]);
-
-  useEffect(() => {
-    if (view !== "guide" || !simRunning) return;
-    const timer = setInterval(() => {
-      setSpots((prev) => (prev.length ? stepLot(prev) : buildLot()));
-    }, 3500);
-    return () => clearInterval(timer);
-  }, [view, simRunning]);
-
-  // The mapped lot is saved, so the driver view can draw the same map the
-  // operator calibrated without needing a camera.
-  const layoutSignature = useMemo(
-    () =>
-      JSON.stringify({
-        spots: spots.map((s) => `${s.label}:${Math.round(s.x)}:${Math.round(s.y)}`),
-        streets: calibration.streets,
-        zones: calibration.zones,
-        entrance: calibration.entrance,
-      }),
-    [spots, calibration]
-  );
-
-  useEffect(() => {
-    if (!spots.length) return undefined;
-    const timer = setTimeout(() => {
-      saveLotLayout({
-        spots,
-        streets: calibration.streets || [],
-        zones: calibration.zones || [],
-        entrance: calibration.entrance,
-      }).catch(() => {});
-    }, 1500);
+    saveLocalCalibration(calibration);
+    if (calibration.sample || !calibration.stalls.length) return undefined;
+    const timer = setTimeout(() => saveLotLayout(calibration).catch(() => {}), 1500);
     return () => clearTimeout(timer);
-  }, [layoutSignature]);
+  }, [calibration]);
 
-  const stats = {
-    total: spots.length,
-    free: spots.filter((s) => s.status === "free").length,
-    occupied: spots.filter((s) => s.status === "occupied").length,
-    blocked: spots.filter((s) => s.status === "blocked").length,
-    predicted: spots.filter((s) => s.status === "predicted").length,
+  const lot = useMemo(() => deriveLot(calibration), [calibration]);
+  const graph = useMemo(() => buildLaneGraph(lot.lanes), [lot]);
+  const fromEntrance = useMemo(() => distancesFrom(graph, lot.entrance), [graph, lot]);
+
+  // ------------------------------------------------------------- live feed
+  const pendingEvents = useRef([]);
+  const lastIngest = useRef(0);
+  const liveRef = useRef(live);
+  liveRef.current = live;
+
+  const onLiveUpdate = useCallback((update) => {
+    setLive({ tracks: update.tracks, statuses: update.statuses, streaming: update.streaming, still: update.still });
+    if (update.events?.length) {
+      pendingEvents.current.push(...update.events);
+      setEvents((prev) => [...update.events.map((e, i) => ({ ...e, key: `${e.occurred_at}-${e.vehicle_id}-${e.type}-${i}` })), ...prev].slice(0, 60));
+    }
+    // Parking sessions are written at most once a second.
+    const now = Date.now();
+    if (now - lastIngest.current > 1000 || update.events?.some((e) => e.type === "exit")) {
+      lastIngest.current = now;
+      const batch = pendingEvents.current;
+      pendingEvents.current = [];
+      vehicleSessions.ingest(update.tracks.filter((t) => t.vehicle_id), batch);
+    }
+  }, [vehicleSessions.ingest]);
+
+  const mode = source === "auto" ? (live.streaming ? "camera" : "sim") : source;
+
+  // ------------------------------------------------------------- simulation
+  const simRef = useRef(null);
+  useEffect(() => {
+    simRef.current = lot.stalls.length ? createSimulation(lot, graph, { arrivalsPerMinute: simRate }) : null;
+    setSim({ tracks: simRef.current?.tracks() || [], statuses: simRef.current?.statuses() || EMPTY_MAP });
+  }, [lot, graph]);
+  useEffect(() => { simRef.current?.setRate(simRate); }, [simRate]);
+
+  useEffect(() => {
+    if (tab !== "lot" || mode !== "sim" || !simRunning || !simRef.current) return undefined;
+    let raf;
+    let last = performance.now();
+    let lastPaint = 0;
+    const loop = (t) => {
+      const dt = (t - last) / 1000;
+      last = t;
+      const s = simRef.current;
+      if (s) {
+        const ev = s.step(dt);
+        if (ev.length) setEvents((prev) => [...ev.map((e, i) => ({ ...e, key: `${e.occurred_at}-${e.vehicle_id}-${e.type}-${i}-${Math.random()}` })), ...prev].slice(0, 60));
+        if (t - lastPaint > 33) {
+          lastPaint = t;
+          setSim({ tracks: s.tracks(), statuses: s.statuses() });
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [tab, mode, simRunning, lot]);
+
+  const simManual = (fn) => {
+    const s = simRef.current;
+    if (!s) return;
+    const ev = fn(s);
+    if (ev.length) setEvents((prev) => [...ev.map((e, i) => ({ ...e, key: `${e.occurred_at}-${e.vehicle_id}-${i}-${Math.random()}` })), ...prev].slice(0, 60));
+    setSim({ tracks: s.tracks(), statuses: s.statuses() });
   };
+
+  // ------------------------------------------------------------- plan data
+  const shown = mode === "camera" ? live : sim;
+  const occupied = lot.stalls.filter((s) => shown.statuses.get(s.id)?.status === "occupied").length;
+  const occupiedKey = lot.stalls.map((s) => (shown.statuses.get(s.id)?.status === "occupied" ? 1 : 0)).join("");
+  const recommended = useMemo(() => recommendStall(lot, graph, shown.statuses, lot.entrance, fromEntrance),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lot, graph, fromEntrance, occupiedKey]);
+  const route = useMemo(() => (recommended && lot.entrance ? routeToStall(lot, graph, recommended) : []), [lot, graph, recommended]);
+  const lotTracks = useMemo(() => shown.tracks.filter((t) => t.ground && t.vehicle_id), [shown.tracks]);
+  const selectedTrack = lotTracks.find((t) => t.key === selected);
+
+  const status = live.streaming
+    ? `Camera: ${live.tracks.filter((t) => t.state !== "lost").length} vehicles tracked`
+    : calibration.stalls.length ? `${calibration.stalls.length} stalls mapped` : "Lot not mapped yet";
 
   return (
-    <div className="min-h-screen bg-[#121212] text-white flex flex-col">
-      {!present && (
-        <TopBar
-          view={view}
-          setView={setView}
-          addSpots={addSpots}
-          setAddSpots={setAddSpots}
-          onLoadPhoto={() => fileInputRef.current?.click()}
-          onClearSpots={clearSpots}
-          onDetect={runDetection}
-          detecting={detecting}
-          onPresent={() => setPresent(true)}
-        />
-      )}
-      {detectionError && <p role="alert" className="px-4 py-2 text-sm text-destructive">{detectionError}</p>}
-      {present && (
-        <button
-          onClick={() => setPresent(false)}
-          className="fixed top-3 right-3 z-50 text-xs text-neutral-400 hover:text-white border border-neutral-700 rounded px-2 py-1 bg-neutral-900/80"
-        >
-          Exit Present (Esc)
-        </button>
-      )}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={(e) => onFileSelected(e.target.files?.[0])}
-      />
+    <div className="flex min-h-screen flex-col bg-[#0f1311] text-white">
+      <TopBar tab={tab} setTab={setTab} status={status} />
 
-      <main className={`flex-1 flex flex-col ${view === "guide" || view === "twin" ? "" : "lg:flex-row"} gap-4 p-4 ${present ? "p-0 gap-0" : ""}`}>
-        {(view === "live" || view === "guide" || Boolean(remoteCode)) && (
-          <div
-            className={
-              view === "live"
-                ? "lg:w-1/2 min-h-0"
-                : view === "guide"
-                ? "order-last h-[230px] flex-none min-h-0 overflow-hidden"
-                : "hidden"
-            }
-          >
-            <LiveCamera
-              trackingStateRef={cameraTrackerRef}
-              snapshot={snapshot}
-              onSnapshotChange={setSnapshot}
-              remoteCode={remoteCode}
-              onRemoteCodeChange={setRemoteCode}
-              onPhoneDisplay={handlePhoneDisplay}
-              onTracksUpdate={vehicleSessions.ingest}
-              assignVehicleId={vehicleSessions.assignVehicleId}
-              lockedLayout={lockedLayout}
-              onLockLayout={setLockedLayout}
-              onSpotsUpdate={setSpots}
-              onFrameUpdate={handleFrameUpdate}
-              onOpenSimulation={view === "live" ? () => setView("guide") : undefined}
-              calibration={calibration}
-              onCalibrationChange={setCalibration}
-            />
-          </div>
-        )}
-        {view === "guide" && (
-          <div className="flex-1 flex flex-col gap-4 min-w-0">
-            <div className="flex flex-col lg:flex-row gap-4">
-              <div className="lg:w-2/3 flex flex-col gap-4 min-w-0">
-                <LotMap
-                  spots={spots}
-                  recommended={recommended}
-                  streets={calibration.streets || []}
-                  entrance={calibration.entrance}
-                  sessions={vehicleSessions.active}
-                  tracks={vehicleSessions.tracks}
-                />
-              </div>
-              <div className="lg:w-1/3 min-w-0">
-                <DriverGuide
-                  spots={spots}
-                  stats={stats}
-                  recommended={recommended}
-                  streets={calibration.streets || []}
-                  entrance={calibration.entrance}
-                  simRunning={simRunning}
-                  onToggleSim={() => setSimRunning((v) => !v)}
-                  onSimulateEnter={simulateEnter}
-                  onSimulateLeave={simulateLeave}
-                />
-              </div>
-            </div>
-
-          </div>
-        )}
-        {view === "twin" && (
-          <div className="flex-1 min-w-0 grid gap-4 lg:grid-cols-[minmax(0,1fr)_370px]">
-            <LotTwin
-              spots={spots}
-              sessions={lotSessions}
-              tracks={vehicleSessions.tracks}
-              zones={calibration.zones || []}
-              streets={calibration.streets || []}
-              entrance={calibration.entrance}
-              onLoadSample={spots.length ? undefined : () => setSpots(buildLot())}
-            />
-            <div className="flex min-h-0 flex-col gap-4">
-              <SessionPanel
-                active={lotSessions}
-                closed={vehicleSessions.closed}
-                ready={vehicleSessions.ready}
-                busy={vehicleSessions.busy}
-                error={vehicleSessions.error}
-                onEnter={() => vehicleSessions.enter(spots)}
-                onConfirm={vehicleSessions.confirm}
-                onExit={vehicleSessions.exit}
-                onOpen={setOpenSession}
-              />
-              <TrackingPanel
-                tracks={vehicleSessions.tracks}
-                sessions={lotSessions}
-                log={vehicleSessions.log}
-                zones={calibration.zones || []}
-                onOpen={setOpenSession}
-              />
-            </div>
-          </div>
-        )}
-        {(view === "photo" || view === "split") && (
-          <div className={`relative ${view === "split" ? "lg:w-1/2" : "lg:w-1/2"} ${present ? "w-1/2" : ""}`}>
-            <ParkingCanvas
-              photoUrl={photoUrl}
-              tracks={photoTracks}
-              spots={spots}
-              onAddSpot={handleAddSpot}
-              onSpotClick={handleSpotClick}
-              onDeleteSpot={handleDeleteSpot}
-              addSpots={addSpots}
-              hide={view === "grid"}
-            />
-          </div>
-        )}
-        {(view === "grid" || view === "split" || view === "live") && (
-          <div className={`flex-1 ${view === "split" ? "lg:w-1/2" : ""}`}>
-            <StatusPanel
-              stats={stats}
-              spots={spots}
-              onSimulateEnter={simulateEnter}
-              onSimulateLeave={simulateLeave}
-              frame={frame}
-              detecting={detecting}
-              onDetect={runDetection}
-            />
-          </div>
+      {/* The camera keeps running while the plan is open, so the plan stays live. */}
+      <main className={tab === "camera" ? "flex flex-1 flex-col gap-3 p-3 lg:p-4" : "hidden"}>
+        <div className="flex min-h-[70vh] flex-1 flex-col">
+          <LiveCamera
+            calibration={calibration}
+            onCalibrationChange={setCalibration}
+            lot={lot}
+            onUpdate={onLiveUpdate}
+            assignVehicleId={vehicleSessions.assignVehicleId}
+            remoteCode={remoteCode}
+            onRemoteCodeChange={setRemoteCode}
+            visible={tab === "camera"}
+          />
+        </div>
+        {calibration.sample && (
+          <p className="rounded-md border border-violet-500/40 bg-violet-500/10 px-3 py-2 text-xs text-violet-200">
+            The sample lot is loaded. Use <b>Clear map</b> and draw your own stalls to map the lot in your camera picture.
+          </p>
         )}
       </main>
 
-      <SessionDetailDialog
-        session={openSession}
-        open={Boolean(openSession)}
-        onOpenChange={(next) => !next && setOpenSession(null)}
-      />
+      {tab === "lot" && (
+        <main className="grid flex-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_340px] lg:p-4">
+          <section className="flex min-h-[60vh] flex-col overflow-hidden rounded-xl border border-neutral-800 bg-[#121714]">
+            <div className="flex flex-wrap items-center gap-2 border-b border-neutral-800 px-3 py-2">
+              <span className="text-[10px] font-semibold tracking-[0.2em] text-neutral-500">LOT PLAN</span>
+              <span className="text-[11px] text-neutral-400">
+                {calibration.sample ? "sample lot" : lot.rectified ? "true-to-scale (calibrated)" : "as seen by the camera"}
+              </span>
+              <div className="ml-auto flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 p-0.5 text-[11px]">
+                <SourceBtn active={mode === "camera"} disabled={!live.streaming} onClick={() => setSource("camera")} title={live.streaming ? "Cars from the camera" : "Start a camera on the Camera tab"}>
+                  <Radio className="h-3 w-3" /> Live camera
+                </SourceBtn>
+                <SourceBtn active={mode === "sim"} onClick={() => setSource("sim")}>
+                  <Shuffle className="h-3 w-3" /> Simulation
+                </SourceBtn>
+              </div>
+            </div>
+            {!lot.rectified && lot.stalls.length > 0 && !calibration.sample && calibration.view !== "overhead" && (
+              <p className="border-b border-neutral-800 bg-sky-500/5 px-3 py-1.5 text-[11px] text-sky-200">
+                The plan follows the camera's perspective. For a true-to-scale plan, use <b>Lot corners</b> on the Camera tab
+                and enter the lot's size in metres.
+              </p>
+            )}
+            <div className="relative flex-1">
+              {lot.stalls.length ? (
+                <div className="absolute inset-0 p-2">
+                  <LotView
+                    lot={lot}
+                    statuses={shown.statuses}
+                    tracks={lotTracks}
+                    recommended={recommended}
+                    route={route}
+                    selected={selected}
+                    onSelect={setSelected}
+                  />
+                </div>
+              ) : (
+                <EmptyLot onSample={() => setCalibrationState(sampleCalibration())} onCamera={() => setTab("camera")} />
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-neutral-800 px-3 py-2 text-[11px] text-neutral-400">
+              <Legend color="rgba(74,222,128,0.8)" label="Free" />
+              <Legend color="rgba(248,113,113,0.8)" label="Occupied" />
+              <Legend color="#4ade80" label="Recommended + route" dashed />
+              {mode === "camera" && <span className="flex items-center gap-1"><Camera className="h-3 w-3" /> Positions come from the camera tracker</span>}
+              {selectedTrack && (
+                <span className="ml-auto font-mono text-neutral-200">
+                  {selectedTrack.vehicle_id} · {selectedTrack.motion}{selectedTrack.spot_label ? ` in ${selectedTrack.spot_label}` : ""}{selectedTrack.speed ? ` · ${Math.round(selectedTrack.speed * 3.6)} km/h` : ""}
+                </span>
+              )}
+            </div>
+          </section>
+
+          <aside className="flex min-w-0 flex-col gap-3">
+            <OccupancyCard total={lot.stalls.length} occupied={occupied} />
+            <GuidanceCard
+              recommended={recommended}
+              distanceMeters={route.length ? pathLength(route) * lot.metersPerUnit : NaN}
+              full={lot.stalls.length > 0 && occupied >= lot.stalls.length}
+            />
+            {mode === "sim" && lot.stalls.length > 0 && (
+              <SimulationCard
+                running={simRunning}
+                onToggle={() => setSimRunning((v) => !v)}
+                rate={simRate}
+                onRate={setSimRate}
+                onAdd={() => simManual((s) => s.addCar())}
+                onRemove={() => simManual((s) => s.removeCar())}
+              />
+            )}
+            <VehicleList tracks={lotTracks} selected={selected} onSelect={setSelected} />
+            <EventLog events={events.filter((e) => (mode === "sim" ? e.source === "simulation" : e.source !== "simulation"))} />
+          </aside>
+        </main>
+      )}
     </div>
+  );
+}
+
+function SourceBtn({ active, disabled, onClick, children, title }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`flex items-center gap-1 rounded px-2 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${active ? "bg-neutral-700 text-white" : "text-neutral-400 hover:text-white"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Legend({ color, label, dashed }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="inline-block h-2.5 w-4 rounded-sm" style={dashed ? { borderTop: `2px dashed ${color}` } : { background: color }} />
+      {label}
+    </span>
   );
 }

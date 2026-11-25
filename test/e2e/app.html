@@ -1,0 +1,5 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module">
+import React from "react"; import { createRoot } from "react-dom/client"; import { MemoryRouter } from "react-router-dom";
+import "/src/index.css"; import Home from "/src/pages/Home.jsx";
+createRoot(document.getElementById("root")).render(React.createElement(MemoryRouter, null, React.createElement(Home)));
+</script></body></html>

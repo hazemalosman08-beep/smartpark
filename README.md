@@ -60,3 +60,21 @@ GitHub integration: [https://docs.base44.com/developers/app-code/local-developme
 Local development: [https://docs.base44.com/developers/backend/overview/local-dev/local-development-overview](https://docs.base44.com/developers/backend/overview/local-dev/local-development-overview)
 
 Support: [https://app.base44.com/support](https://app.base44.com/support)
+
+## SmartPark: how detection works
+
+- **Vehicle detection** runs in the browser (`src/lib/vision/detector.worker.js`) with a YOLO11 model
+  (`public/models/yolo11s.onnx`, or `yolo11n.onnx` for slower devices) through ONNX Runtime Web: WebGPU when
+  available, otherwise WebAssembly. Camera frames are not uploaded. A "small-car boost" also scans four
+  overlapping zoomed tiles so distant cars are found.
+- **Tracking** (`src/lib/vision/tracker.js`): Kalman prediction and two-stage optimal matching (ByteTrack
+  style). A vehicle gets an `SP-###` ID only after it has been seen in several frames. Parked cars that are
+  briefly hidden keep their ID.
+- **Stalls and occupancy** (`src/lib/vision/lot.js`): stalls are drawn as perspective-correct rows. Each car
+  is matched to at most one stall from its ground footprint, and a stall only changes state after the
+  evidence holds for about 1–2 s.
+- **Lot plan**: the Lot tab draws the mapped lot top-down. Use "Lot corners" with the real size in metres
+  to get a true-to-scale plan. With no camera running, the Lot tab runs a traffic simulation on the same plan.
+
+Tests: `npm test` (unit tests). For a browser check, run `npx vite --config vite.test.config.js --port 5199`,
+then `node test/e2e/ui.e2e.cjs`.

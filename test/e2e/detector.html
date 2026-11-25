@@ -1,0 +1,10 @@
+<!doctype html><html><body><img id="img" src="./lot.png"><script type="module">
+// Runs the in-browser detector on test/e2e/lot.png and exposes the result.
+import { detectVehiclesLocal } from "/src/lib/vision/vehicleDetector.js";
+const img = document.getElementById("img"); await img.decode();
+try {
+  const a = await detectVehiclesLocal(img, { tiles: false });
+  const b = await detectVehiclesLocal(img, { tiles: true });
+  window.__result = { full: a.boxes.filter((x) => x.score >= 0.3).length, tiled: b.boxes.filter((x) => x.score >= 0.3).length, backend: b.backend };
+} catch (e) { window.__result = { error: String(e) }; }
+</script></body></html>
