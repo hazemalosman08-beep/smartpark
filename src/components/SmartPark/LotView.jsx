@@ -90,25 +90,6 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
         <rect x={0} y={0} width={lot.width} height={lot.height} fill="url(#asphalt)" rx={geometry.carW * 0.3} />
       )}
 
-      {/* lanes */}
-      {!showPhoto && lot.lanes.map((lane) => {
-        const d = lane.points.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
-        return (
-          <g key={lane.id}>
-            <path d={d} stroke="#2f353b" strokeWidth={geometry.laneW} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-            <path d={d} stroke="rgba(250,204,21,0.55)" strokeWidth={geometry.font * 0.12} strokeDasharray={`${geometry.font * 1.4} ${geometry.font}`} fill="none" />
-            {lane.points.slice(1).map((p, i) => {
-              const a = lane.points[i];
-              const m = { x: (a.x + p.x) / 2, y: (a.y + p.y) / 2 };
-              const len = dist(a, p);
-              if (len < geometry.laneW * 1.2) return null;
-              const ux = (p.x - a.x) / len, uy = (p.y - a.y) / len;
-              return <path key={i} d={`M${m.x - ux * geometry.font},${m.y - uy * geometry.font} L${m.x + ux * geometry.font},${m.y + uy * geometry.font}`} stroke="rgba(255,255,255,0.45)" strokeWidth={geometry.font * 0.18} markerEnd="url(#lane-arrow)" />;
-            })}
-          </g>
-        );
-      })}
-
       {/* stalls */}
       {lot.stalls.map((s) => {
         const st = statuses?.get(s.id);

@@ -200,12 +200,9 @@ export default function Home() {
             <DriverView
               lot={lot}
               statuses={live.streaming ? live.statuses : sim.statuses}
-              tracks={(live.streaming ? live.tracks : []).filter((t) => t.ground && t.vehicle_id && t.motion === "parked")}
               recommended={liveRecommended}
               route={liveRoute}
               backdrop={backdrop}
-              photo={photo}
-              onPhotoChange={setPhoto}
             />
           ) : (
             <EmptyLot onSample={() => setCalibrationState(sampleCalibration())} onCamera={() => setTab("camera")} />
