@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { base44 } from "@/api/base44Client";
+import { db } from "@/lib/localStore";
 import { makeVehicleId, recommendFreeSpot, zoneOf } from "@/lib/vehicleSessions";
 
 const SOURCE = "simulation";
@@ -21,11 +21,11 @@ export default function useVehicleSessions() {
   const load = useCallback(async () => {
     try {
       const [live, past] = await Promise.all([
-        base44.entities.ParkingSession.filter(
+        db.ParkingSession.filter(
           { status: "active" },
           { sort: "-entry_time", limit: 100 }
         ),
-        base44.entities.ParkingSession.filter(
+        db.ParkingSession.filter(
           { status: "closed" },
           { sort: "-exit_time", limit: 20 }
         ),
@@ -55,7 +55,7 @@ export default function useVehicleSessions() {
         const target = recommendFreeSpot(spots, live);
         const now = new Date().toISOString();
 
-        const created = await base44.entities.ParkingSession.create({
+        const created = await db.ParkingSession.create({
           vehicle_id: vehicleId,
           status: "active",
           entry_time: now,
@@ -97,7 +97,7 @@ export default function useVehicleSessions() {
             note: `Guided to ${target.label}; parking not confirmed`,
           });
         }
-        await base44.entities.VehicleEvent.bulkCreate(events);
+        await db.VehicleEvent.bulkCreate(events);
         await load();
         return created;
       } catch (err) {
@@ -117,13 +117,13 @@ export default function useVehicleSessions() {
       setError(null);
       try {
         const now = new Date().toISOString();
-        await base44.entities.ParkingSession.update(session.id, {
+        await db.ParkingSession.update(session.id, {
           location_status: "confirmed",
           confidence: 0.97,
           last_seen_at: now,
           zone: session.spot_label ? zoneOf(session.spot_label) : session.zone,
         });
-        await base44.entities.VehicleEvent.create({
+        await db.VehicleEvent.create({
           session_id: session.id,
           vehicle_id: session.vehicle_id,
           type: "parked",
@@ -155,12 +155,12 @@ export default function useVehicleSessions() {
       setError(null);
       try {
         const now = new Date().toISOString();
-        await base44.entities.ParkingSession.update(session.id, {
+        await db.ParkingSession.update(session.id, {
           status: "closed",
           exit_time: now,
           last_seen_at: now,
         });
-        await base44.entities.VehicleEvent.create({
+        await db.VehicleEvent.create({
           session_id: session.id,
           vehicle_id: session.vehicle_id,
           type: "exit",
@@ -286,7 +286,7 @@ export default function useVehicleSessions() {
     try {
       let created = [];
       if (creates.length) {
-        created = await base44.entities.ParkingSession.bulkCreate(creates);
+        created = await db.ParkingSession.bulkCreate(creates);
         created.forEach((record) => {
           pendingRef.current.delete(record.vehicle_id);
           writtenRef.current.set(record.vehicle_id, {
@@ -298,14 +298,14 @@ export default function useVehicleSessions() {
           });
         });
       }
-      if (updates.length) await base44.entities.ParkingSession.bulkUpdate(updates);
+      if (updates.length) await db.ParkingSession.bulkUpdate(updates);
 
       const idByVehicle = new Map([...known].map(([vehicle, session]) => [vehicle, session.id]));
       created.forEach((record) => idByVehicle.set(record.vehicle_id, record.id));
       const observations = events
         .filter((event) => event.vehicle_id && idByVehicle.has(event.vehicle_id))
         .map((event) => ({ ...event, session_id: idByVehicle.get(event.vehicle_id) }));
-      if (observations.length) await base44.entities.VehicleEvent.bulkCreate(observations);
+      if (observations.length) await db.VehicleEvent.bulkCreate(observations);
 
       setSessions((prev) => {
         const byId = new Map(prev.map((session) => [session.id, session]));

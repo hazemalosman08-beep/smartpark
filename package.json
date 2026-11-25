@@ -1,5 +1,5 @@
 {
-  "name": "base44-app",
+  "name": "smartpark",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -13,8 +13,6 @@
     "test": "node --test test/unit/*.test.mjs"
   },
   "dependencies": {
-    "@base44/sdk": "^0.8.63",
-    "@base44/vite-plugin": "^1.0.54",
     "@hello-pangea/dnd": "^17.0.0",
     "@hookform/resolvers": "^4.1.2",
     "@radix-ui/react-accordion": "^1.2.3",
@@ -62,6 +60,7 @@
     "moment": "^2.30.1",
     "next-themes": "^0.4.4",
     "onnxruntime-web": "^1.20.1",
+    "peerjs": "^1.5.5",
     "qrcode.react": "^4.2.0",
     "react": "^18.2.0",
     "react-day-picker": "^8.10.1",

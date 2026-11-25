@@ -1,6 +1,6 @@
-// End-to-end UI check. Start the test server first:
-//   npx vite --config vite.test.config.js --port 5199
-// then: node test/e2e/ui.e2e.cjs   (screenshots are written next to this file, or to OUT_DIR)
+// End-to-end UI check. Start the dev server first:
+//   npx vite --port 5199
+// then: node test/e2e/ui.e2e.cjs   (screenshots go next to this file, or to OUT_DIR)
 const { chromium } = require('playwright');
 const OUT = (process.env.OUT_DIR || __dirname) + '/';
 const BASE = process.env.BASE_URL || 'http://localhost:5199';

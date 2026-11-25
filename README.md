@@ -1,88 +1,58 @@
-# Base44 Project
+# SmartPark
 
-Use this repository to run and edit the app locally, then publish changes back through Base44.
+A parking-lot camera app that runs entirely in the browser. No backend and no account are needed.
 
-Any change pushed to the repo will also be reflected in the Base44 Builder.
+- **Camera tab:** use a webcam, your phone as a wireless camera, or a photo or video file. Cars are detected on
+  the device with a YOLO11 model and tracked with stable IDs (`SP-001`, …). You draw the stall rows, driving
+  lanes and entrance on the picture, and each stall shows as free or taken.
+- **Lot tab:** a top-down plan of the lot exactly as you mapped it, with the live cars on it, the best free stall
+  and the route to it. With no camera running it shows a traffic simulation on the same plan.
+- **Find my car:** look up a car by its ID on the same device.
+- **Installable** as an app (PWA): "Install app" in Chrome/Edge/Android, or Share → Add to Home Screen on iPhone.
 
-## Prerequisites
+Data (the lot map, parking history) is saved in the browser on each device. It is not shared between devices.
 
-1. Clone the repository using the project's Git URL.
-2. Navigate to the project directory.
-3. Install dependencies: `npm install`.
-4. Install the Base44 CLI: `npm install -g base44@latest`.
-5. Install [Deno](https://docs.deno.com/runtime/getting_started/installation/) — the local Base44 backend runs on it.
+## Put it online (free, no coding)
 
-Run `base44 --help` (or see the [CLI reference](https://docs.base44.com/developers/references/cli/commands/introduction)) for the full command surface.
+1. Unzip `smartpark-site.zip` (the ready-built site).
+2. Go to <https://app.netlify.com/drop>, sign up or log in, and drag the unzipped folder onto the page.
+3. Netlify gives you an `https://…netlify.app` link. Open it on your computer and your phone.
 
-## Run Locally
+HTTPS is required for cameras, and Netlify provides it automatically.
 
-Three commands, from the project root:
+## Phone as the camera (home testing)
 
-```bash
-base44 login   # one-time per machine
-base44 link    # one-time per clone
-base44 dev     # local backend + frontend together
-```
+1. On the computer: **Camera tab → Phone camera**. A QR code and a 6-digit code appear.
+2. On the phone: scan the QR code, tap **Start camera** and allow camera access. Prop the phone up facing the lot.
+3. The video goes directly from the phone to the computer (WebRTC). It works best with both on the same Wi-Fi.
+   The free public PeerJS server is used only to introduce the two devices.
 
-Open the frontend URL that `base44 dev` prints (typically `http://localhost:5173`).
+To remove the feature later, delete `src/lib/phoneLink.js`, `src/pages/PhoneCamera.jsx` and
+`src/components/SmartPark/RemoteCameraDialog.jsx`, remove the "Phone camera" button and phone code in
+`LiveCamera.jsx` and the `/phone-camera` route in `App.jsx`, then run `npm uninstall peerjs`.
 
-Notes:
+To use your own PeerJS server instead of the public one, build with `VITE_PEER_HOST`, `VITE_PEER_PORT`,
+`VITE_PEER_PATH` and `VITE_PEER_SECURE`.
 
-- **Every fresh clone needs `base44 link`.** It writes `base44/.app.jsonc` (the app-id pointer), which is deliberately gitignored. Your app id is in the Builder URL (`app.base44.com/apps/<id>/...`); `base44 link --help` shows the non-interactive flags.
-- **`base44 dev` runs the frontend for you** (via `site.serveCommand` in this repo's `base44/config.jsonc`) — never run `npm run dev` yourself: alone it serves a UI with no backend behind it (`[base44] Proxy not enabled`, every `/api` call fails), and alongside `base44 dev` the second Vite silently takes the next port and you end up looking at the wrong one.
-- **The app must be published at least once for the UI to load under `base44 dev`.** The frontend boots by fetching app settings from the hosted app; before the first publish that fails and every page redirects to login. The local API works regardless.
-- Entities, functions, and auth run locally — entity data is **in-memory only**, wiped when `base44 dev` restarts. Everything else (Core integrations, OAuth login) is forwarded to your deployed app. Full breakdown: [Local development overview](https://docs.base44.com/developers/backend/overview/local-dev/local-development-overview).
-
-## Frontend Only, Hosted Backend
-
-To work on just the frontend against your app's live hosted backend:
-
-```bash
-base44 dev --remote
-```
-
-⚠️ In this mode writes go to your app's **production data** — plain `base44 dev` keeps everything local.
-
-## Publish Your Changes
-
-After pushing your changes to git, open the Base44 dashboard and publish the app:
+## Develop
 
 ```bash
-base44 dashboard open
+npm install
+npm run dev      # http://localhost:5173
+npm run build    # production files in dist/
+npm test         # unit tests (geometry, tracker, lot, simulation)
 ```
 
-This repo syncs to Base44 through git, so publish from the dashboard rather than `base44 deploy` — a CLI deploy ships your local tree directly, bypassing the sync, and the deployed state silently diverges from the repo.
+How detection works:
 
-## Docs & Support
+- **Detector** (`src/lib/vision/detector.worker.js`): YOLO11 (`public/models/yolo11s.onnx`, or the faster
+  `yolo11n.onnx`) on ONNX Runtime Web, using WebGPU when available and WebAssembly otherwise. A "small-car boost"
+  also scans four zoomed tiles.
+- **Tracker** (`src/lib/vision/tracker.js`): Kalman prediction plus two-stage optimal matching (ByteTrack style).
+  A new car must be seen a few times before it gets an ID.
+- **Stalls** (`src/lib/vision/lot.js`): perspective-correct stall rows, one car per stall, and a short hold before
+  a stall changes state. "Lot corners" plus the real size in metres gives a true-to-scale plan.
+- **App shell** (`public/sw.js`): caches the model after the first download and lets the app open offline.
 
-GitHub integration: [https://docs.base44.com/developers/app-code/local-development/github](https://docs.base44.com/developers/app-code/local-development/github)
-
-Local development: [https://docs.base44.com/developers/backend/overview/local-dev/local-development-overview](https://docs.base44.com/developers/backend/overview/local-dev/local-development-overview)
-
-Support: [https://app.base44.com/support](https://app.base44.com/support)
-
-## SmartPark: how detection works
-
-- **Vehicle detection** runs in the browser (`src/lib/vision/detector.worker.js`) with a YOLO11 model
-  (`public/models/yolo11s.onnx`, or `yolo11n.onnx` for slower devices) through ONNX Runtime Web: WebGPU when
-  available, otherwise WebAssembly. Camera frames are not uploaded. A "small-car boost" also scans four
-  overlapping zoomed tiles so distant cars are found.
-- **Tracking** (`src/lib/vision/tracker.js`): Kalman prediction and two-stage optimal matching (ByteTrack
-  style). A vehicle gets an `SP-###` ID only after it has been seen in several frames. Parked cars that are
-  briefly hidden keep their ID.
-- **Stalls and occupancy** (`src/lib/vision/lot.js`): stalls are drawn as perspective-correct rows. Each car
-  is matched to at most one stall from its ground footprint, and a stall only changes state after the
-  evidence holds for about 1–2 s.
-- **Lot plan**: the Lot tab draws the mapped lot top-down. Use "Lot corners" with the real size in metres
-  to get a true-to-scale plan. With no camera running, the Lot tab runs a traffic simulation on the same plan.
-
-Tests: `npm test` (unit tests). For a browser check, run `npx vite --config vite.test.config.js --port 5199`,
-then `node test/e2e/ui.e2e.cjs`.
-
-## Installing as an app
-
-SmartPark is an installable web app (PWA): `public/smartpark.webmanifest`, `public/sw.js` and `public/icons/`.
-After publishing, open the site and either click **Install app** in the top bar (Chrome, Edge, Android) or, on
-iPhone/iPad, use Safari's Share → **Add to Home Screen**. The detection model is kept on the device after the
-first download. Pages are always loaded fresh when online, so new publishes show up right away. To force
-returning visitors to refetch the cached model and built files, change `VERSION` in `public/sw.js`.
+Browser tests: start `npm run dev -- --port 5199`, then run `node test/e2e/ui.e2e.cjs`.
+`test/e2e/phone.e2e.cjs` checks phone pairing; see its header for setup.

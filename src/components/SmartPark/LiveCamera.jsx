@@ -1,15 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Cpu, Eraser, FileVideo, Grid3x3, Loader2, MapPin, Pause, Play, Route, ScanSearch,
-  Smartphone, Sparkles, Square, SquareDashed, Trash2, Video, VideoOff, Wand2, LogOut as ExitIcon,
+  Smartphone, Sparkles, Square, SquareDashed, Trash2, Video, VideoOff, LogOut as ExitIcon,
 } from "lucide-react";
-import { base44 } from "@/api/base44Client";
 import RemoteCameraDialog from "@/components/SmartPark/RemoteCameraDialog";
-import useRemoteCamera, { makePairCode } from "@/lib/useRemoteCamera";
-import scanFrameFile from "@/lib/scanFrameFile";
+import { makePairCode, receivePhoneCamera } from "@/lib/phoneLink";
 import { detectVehiclesLocal, onDetectorStatus, preloadDetector, setDetectorModel, MODELS } from "@/lib/vision/vehicleDetector";
 import { createTracker } from "@/lib/vision/tracker";
 import {
-  assignVehiclesToStalls, createOccupancy, groundPoint, makeStallRow, nextRowLetter, stallFromVehicle, stallUnder, stallsFromCenters,
+  assignVehiclesToStalls, createOccupancy, groundPoint, makeStallRow, nextRowLetter, stallFromVehicle, stallUnder,
 } from "@/lib/vision/lot";
 import { drawOverlay } from "@/lib/vision/overlay";
 import { iou, pointInPolygon, projectOnSegment } from "@/lib/vision/geometry";
@@ -40,7 +38,6 @@ export default function LiveCamera({
   const canvasRef = useRef(null);
   const webcamRef = useRef(null);
   const phoneVideoRef = useRef(null);
-  const phoneImgRef = useRef(null);
   const fileVideoRef = useRef(null);
   const fileImgRef = useRef(null);
   const frozenRef = useRef(null);
@@ -62,10 +59,18 @@ export default function LiveCamera({
   const [groundSize, setGroundSize] = useState({ width: 60, length: 40 });
   const [frameRect, setFrameRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
   const [remoteOpen, setRemoteOpen] = useState(false);
-  const [aiBusy, setAiBusy] = useState(false);
 
-  const remote = useRemoteCamera(source === "phone" ? remoteCode : "", "viewer");
+  const [phoneStream, setPhoneStream] = useState(null);
+  const [phoneStatus, setPhoneStatus] = useState({ state: "starting" });
   const [phoneVideoPlaying, setPhoneVideoPlaying] = useState(false);
+
+  // Wait for the phone while the phone source is selected.
+  useEffect(() => {
+    if (source !== "phone" || !remoteCode) return undefined;
+    setPhoneStatus({ state: "starting" });
+    const link = receivePhoneCamera(remoteCode, { onStream: setPhoneStream, onStatus: setPhoneStatus });
+    return () => link.close();
+  }, [source, remoteCode]);
 
   const trackerRef = useRef(createTracker());
   const occupancyRef = useRef(createOccupancy());
@@ -89,7 +94,7 @@ export default function LiveCamera({
     if (source === "webcam") return webcamRef.current;
     if (source === "video") return fileVideoRef.current;
     if (source === "image") return fileImgRef.current;
-    if (source === "phone") return phoneVideoPlaying ? phoneVideoRef.current : phoneImgRef.current;
+    if (source === "phone") return phoneVideoPlaying ? phoneVideoRef.current : null;
     return null;
   }, [source, frozen, phoneVideoPlaying]);
   const mediaRef = useRef(media);
@@ -165,9 +170,9 @@ export default function LiveCamera({
     const video = phoneVideoRef.current;
     setPhoneVideoPlaying(false);
     if (!video) return;
-    video.srcObject = remote.stream || null;
-    if (remote.stream) video.play().catch(() => {});
-  }, [remote.stream]);
+    video.srcObject = phoneStream || null;
+    if (phoneStream) video.play().catch(() => {});
+  }, [phoneStream]);
 
   useEffect(() => () => streamRef.current?.getTracks().forEach((t) => t.stop()), []);
   useEffect(() => { preloadDetector(); }, []);
@@ -441,32 +446,6 @@ export default function LiveCamera({
     setNotice(added.length ? `Added ${added.length} stall${added.length === 1 ? "" : "s"} from parked cars.` : "No parked cars outside existing stalls. Cars must be standing still for a few seconds.");
   };
 
-  // Painted stall layout read by the cloud vision model (optional).
-  const aiMapStalls = async () => {
-    const el = mediaRef.current();
-    if (!mediaReady(el)) return;
-    setAiBusy(true);
-    setNotice(null);
-    try {
-      const { width, height } = mediaSize(el);
-      const canvas = document.createElement("canvas");
-      canvas.width = width; canvas.height = height;
-      canvas.getContext("2d").drawImage(el, 0, 0, width, height);
-      const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.9));
-      const file = new File([blob], `frame-${Date.now()}.jpg`, { type: "image/jpeg" });
-      const { file_uri, file_url } = await scanFrameFile(file);
-      const { data } = await base44.functions.invoke("analyzeParkingFrame", { file_uri, file_url, width, height, layout_only: true });
-      const stalls = stallsFromCenters(data?.spots || []);
-      if (!stalls.length) throw new Error("The AI did not find painted stalls in this frame");
-      update({ stalls: [...calRef.current.stalls.filter((s) => s.learned), ...stalls] });
-      setNotice(`AI mapped ${stalls.length} stalls. Check them and fix any with Erase / Stall row — hand-drawn rows are the most accurate.`);
-    } catch (err) {
-      setNotice(err?.message || "AI stall mapping failed");
-    } finally {
-      setAiBusy(false);
-    }
-  };
-
   const streaming = source !== SOURCES_IDLE;
   const spec = tool ? TOOLS[tool] : null;
   const hint = spec ? spec.hint[Math.min(draft.length, spec.hint.length - 1)] : null;
@@ -519,14 +498,11 @@ export default function LiveCamera({
           ref={phoneVideoRef}
           autoPlay playsInline muted
           onLoadedMetadata={measure}
-          onPlaying={() => { setPhoneVideoPlaying(true); remote.acknowledge(); setRemoteOpen(false); }}
+          onPlaying={() => { setPhoneVideoPlaying(true); setRemoteOpen(false); }}
           onEmptied={() => setPhoneVideoPlaying(false)}
           className="absolute inset-0 h-full w-full object-contain"
           style={{ display: source === "phone" && phoneVideoPlaying && !frozen ? "block" : "none" }}
         />
-        {source === "phone" && !phoneVideoPlaying && remote.frame && (
-          <img ref={phoneImgRef} src={remote.frame} alt="Phone camera" onLoad={() => { measure(); remote.acknowledge(); }} className="absolute inset-0 h-full w-full object-contain" style={{ display: frozen ? "none" : "block" }} />
-        )}
         {frozen && frozenRef.current && (
           <FrozenFrame canvas={frozenRef.current} onReady={measure} />
         )}
@@ -562,8 +538,15 @@ export default function LiveCamera({
             <b style={{ color: spec.color }}>{spec.label}:</b> {hint} <span className="text-neutral-400">· Esc to cancel{draft.length ? " · Backspace to undo" : ""}</span>
           </div>
         )}
-        {(error || remote.error) && (
-          <div className="absolute bottom-12 left-1/2 max-w-[90%] -translate-x-1/2 rounded-full border border-red-500/50 bg-red-500/20 px-3 py-1.5 text-center text-[11px] text-red-200">{error || remote.error}</div>
+        {source === "phone" && !phoneVideoPlaying && !remoteOpen && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-sm text-neutral-300">
+            <Smartphone className="h-8 w-8 text-green-400" />
+            {phoneStatus.state === "error" ? <span className="text-red-300">{phoneStatus.message}</span> : <span>Waiting for your phone… code <b className="font-mono">{remoteCode}</b></span>}
+            <button onClick={() => setRemoteOpen(true)} className="rounded-md border border-neutral-600 px-3 py-1.5 text-xs hover:border-neutral-400">Show QR code</button>
+          </div>
+        )}
+        {error && (
+          <div className="absolute bottom-12 left-1/2 max-w-[90%] -translate-x-1/2 rounded-full border border-red-500/50 bg-red-500/20 px-3 py-1.5 text-center text-[11px] text-red-200">{error}</div>
         )}
 
         {!streaming && (
@@ -610,7 +593,6 @@ export default function LiveCamera({
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 text-[10px] font-semibold tracking-[0.18em] text-neutral-500">AUTO</span>
         <Btn disabled={!streaming} onClick={learnStalls}><Sparkles className="h-3.5 w-3.5" /> Stalls from parked cars</Btn>
-        <Btn disabled={!streaming || aiBusy} onClick={aiMapStalls}>{aiBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />} AI-map painted stalls</Btn>
         <span className="ml-2 text-[11px] text-neutral-400">Camera view:</span>
         <Btn active={calibration.view !== "overhead"} onClick={() => update({ view: "angled" })}>Angled</Btn>
         <Btn active={calibration.view === "overhead"} onClick={() => update({ view: "overhead" })}>Overhead</Btn>
@@ -627,12 +609,9 @@ export default function LiveCamera({
         open={remoteOpen}
         onOpenChange={setRemoteOpen}
         code={remoteCode}
-        ready={remote.connected}
-        cameras={remote.cameras}
-        receiving={remote.receiving}
-        error={remote.error}
-        onStop={() => { remote.endSession(); onRemoteCodeChange?.(""); setRemoteOpen(false); stopAll(); }}
-        onNewCode={() => { remote.endSession(); onRemoteCodeChange?.(makePairCode()); }}
+        status={phoneStatus}
+        onStop={() => { onRemoteCodeChange?.(""); setRemoteOpen(false); stopAll(); }}
+        onNewCode={() => { setPhoneStream(null); onRemoteCodeChange?.(makePairCode()); }}
       />
     </div>
   );

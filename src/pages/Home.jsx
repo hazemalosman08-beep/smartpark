@@ -5,7 +5,7 @@ import LiveCamera from "@/components/SmartPark/LiveCamera";
 import LotView from "@/components/SmartPark/LotView";
 import { EmptyLot, EventLog, GuidanceCard, OccupancyCard, SimulationCard, VehicleList } from "@/components/SmartPark/LotPanel";
 import useVehicleSessions from "@/hooks/useVehicleSessions";
-import { loadLocalCalibration, loadLotLayout, saveLocalCalibration, saveLotLayout } from "@/lib/lotLayout";
+import { loadLocalCalibration, saveLocalCalibration } from "@/lib/lotLayout";
 import {
   EMPTY_CALIBRATION, buildLaneGraph, deriveLot, distancesFrom, normalizeCalibration, pathLength, recommendStall,
   routeToStall, sampleCalibration,
@@ -30,20 +30,7 @@ export default function Home() {
   // ------------------------------------------------------------ calibration
   const setCalibration = useCallback((next) => setCalibrationState(normalizeCalibration(next)), []);
 
-  // No local copy: restore the lot map saved on the server.
-  useEffect(() => {
-    if (loadLocalCalibration()) return;
-    loadLotLayout()
-      .then((saved) => { if (saved?.calibration?.stalls?.length) setCalibrationState(saved.calibration); })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    saveLocalCalibration(calibration);
-    if (calibration.sample || !calibration.stalls.length) return undefined;
-    const timer = setTimeout(() => saveLotLayout(calibration).catch(() => {}), 1500);
-    return () => clearTimeout(timer);
-  }, [calibration]);
+  useEffect(() => { saveLocalCalibration(calibration); }, [calibration]);
 
   const lot = useMemo(() => deriveLot(calibration), [calibration]);
   const graph = useMemo(() => buildLaneGraph(lot.lanes), [lot]);

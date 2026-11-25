@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, CarFront, Loader2, Search } from "lucide-react";
-import { base44 } from "@/api/base44Client";
+import { db } from "@/lib/localStore";
 import { loadLotLayout } from "@/lib/lotLayout";
 import { LOCATION_STATUS, formatClock, formatDuration } from "@/lib/vehicleSessions";
 import FindCarMap from "@/components/SmartPark/FindCarMap";
@@ -38,7 +38,7 @@ export default function FindMyCar() {
     setError(null);
     setSearched(true);
     try {
-      const page = await base44.entities.ParkingSession.filter(
+      const page = await db.ParkingSession.filter(
         { vehicle_id: id },
         { sort: "-entry_time", limit: 1 }
       );
