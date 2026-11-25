@@ -2,7 +2,7 @@
 // drawn lanes to a free stall, pull in, stay a while, back out and leave by the
 // exit. Used when no camera is running, so the plan can be explored and demoed.
 import { dist } from "./geometry.js";
-import { routeBetween, routeToStall } from "./lot.js";
+import { gridRoute, routeBetween, routeToStall } from "./lot.js";
 import { makeVehicleId } from "../vehicleSessions.js";
 
 const COLORS = ["#e5e7eb", "#9ca3af", "#1f2937", "#dc2626", "#2563eb", "#f59e0b", "#10b981", "#7c3aed", "#78350f", "#0f172a"];
@@ -105,12 +105,16 @@ export function createSimulation(lot, graph, { fill = 0.55, arrivalsPerMinute = 
     const s = agent.stall;
     const aisle = { x: s.front.x + (s.front.x - s.back.x) * 0.45, y: s.front.y + (s.front.y - s.back.y) * 0.45 };
     const target = lot.exit || lot.entrance;
-    const out = routeBetween(graph, aisle, target);
+    // Same rule as arriving cars: hand-drawn lanes if any, otherwise around the
+    // parking spaces over open pavement.
+    const manualLanes = lot.lanes.some((l) => !l.auto);
+    const out = manualLanes ? routeBetween(graph, aisle, target) : gridRoute(lot, aisle, target);
     agent.path = [{ ...s.centroid }, aisle, ...out.slice(1)];
     agent.seg = 0;
     agent.reverseUntil = 1; // back out of the stall
     agent.phase = "leaving";
-    reserved.delete(s.id);
+    // The space stays reserved until the car has backed out of it.
+    agent.releaseAt = 1;
     events.push(event(agent, "move", now, `Pulling out of ${s.label}`));
   }
 
@@ -158,6 +162,7 @@ export function createSimulation(lot, graph, { fill = 0.55, arrivalsPerMinute = 
       if (move >= d) {
         a.pos = { ...target };
         a.seg += 1;
+        if (a.releaseAt !== undefined && a.seg >= a.releaseAt) { reserved.delete(a.stall.id); a.releaseAt = undefined; }
       } else {
         a.pos = { x: a.pos.x + ((target.x - a.pos.x) / d) * move, y: a.pos.y + ((target.y - a.pos.y) / d) * move };
       }

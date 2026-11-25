@@ -234,7 +234,7 @@ export default function Home() {
             </div>
             {!lot.rectified && lot.stalls.length > 0 && !calibration.sample && calibration.view !== "overhead" && (
               <p className="border-b border-neutral-800 bg-sky-500/5 px-3 py-1.5 text-[11px] text-sky-200">
-                The plan follows the camera's perspective. For a true-to-scale plan, use <b>Lot corners</b> on the Camera tab
+                The plan follows the camera's perspective. For a true-to-scale plan, use <b>Lot corners</b> (under More tools) on the Camera tab
                 and enter the lot's size in metres.
               </p>
             )}

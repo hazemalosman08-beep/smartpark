@@ -11,22 +11,26 @@ import {
   assignVehiclesToStalls, createOccupancy, dedupeStalls, occupancyCounts, groundPoint, guessView, makeStallRow, nextRowLetter,
 } from "@/lib/vision/lot";
 import { drawOverlay } from "@/lib/vision/overlay";
+import { clearPhoto, loadPhoto, savePhoto } from "@/lib/photoStore";
 import { autoMapLot } from "@/lib/vision/autoMap";
 import { imagePixels, stallAppearance } from "@/lib/vision/stallFinder";
 import { pointInPolygon, projectOnSegment } from "@/lib/vision/geometry";
 
 const TOOLS = {
-  row: { label: "Stall row", icon: Grid3x3, points: 4, color: "#22d3ee", hint: ["Click the front-left corner of the row (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
+  row: { label: "Add row of spaces", icon: Grid3x3, points: 4, color: "#22d3ee", hint: ["Click the front-left corner of the row (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
   stall: { label: "Single stall", icon: Square, points: 4, color: "#22d3ee", hint: ["Front-left corner (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
   lane: { label: "Driving lane", icon: Route, points: Infinity, color: "#60a5fa", hint: ["Click along the centre of the lane, in driving direction. Double-click or press Enter to finish."] },
   entrance: { label: "Entrance", icon: MapPin, points: 1, color: "#4ade80", hint: ["Click where cars enter the lot"] },
   building: { label: "Building", icon: Building2, points: 1, color: "#fbbf24", hint: ["Click the building entrance drivers walk to. The guide then picks the free space with the shortest walk."] },
   exit: { label: "Exit", icon: ExitIcon, points: 1, color: "#f472b6", hint: ["Click where cars leave the lot"] },
   ground: { label: "Lot corners", icon: SquareDashed, points: 4, color: "#38bdf8", hint: ["Click the far-left corner of the paved lot", "Far-right corner", "Near-right corner", "Near-left corner"] },
-  erase: { label: "Erase", icon: Eraser, points: 0, color: "#f87171", hint: ["Click a stall or lane to remove it"] },
+  erase: { label: "Remove space", icon: Eraser, points: 0, color: "#f87171", hint: ["Click a stall or lane to remove it"] },
 };
 
 const SOURCES_IDLE = "none";
+// Shown by default; the rest (single stall, lanes, exit, lot corners) sit
+// behind "More tools" — the automatic mapping covers them in most lots.
+const MAIN_TOOLS = ["entrance", "building", "row", "erase"];
 
 export default function LiveCamera({
   calibration,
@@ -55,9 +59,11 @@ export default function LiveCamera({
   const [notice, setNotice] = useState(null);
   const [detector, setDetector] = useState({ state: "idle" });
   const [perf, setPerf] = useState({ fps: 0, ms: 0, tiled: false });
-  const [counts, setCounts] = useState({ vehicles: 0, free: 0, occupied: 0 });
+  // ready: false until the first detection on the current picture finishes.
+  const [counts, setCounts] = useState({ vehicles: 0, free: 0, occupied: 0, ready: false });
   const [tiling, setTiling] = useState("auto"); // auto | on | off
   const [tool, setTool] = useState(null);
+  const [moreTools, setMoreTools] = useState(false);
   const [draft, setDraft] = useState([]);
   const [rowCount, setRowCount] = useState(8);
   const [groundSize, setGroundSize] = useState({ width: 60, length: 40 });
@@ -138,11 +144,13 @@ export default function LiveCamera({
     issuedRef.current = new Set();
     colorsRef.current = new Map();
     liveRef.current = { tracks: [], pending: [], statuses: new Map(), lastBoxes: [] };
-    setCounts({ vehicles: 0, free: 0, occupied: 0 });
+    setCounts({ vehicles: 0, free: 0, occupied: 0, ready: false });
     onUpdateRef.current?.({ tracks: [], statuses: new Map(), events: [], streaming: false });
   }, []);
 
   const stopAll = useCallback(() => {
+    // A new source (or Stop) replaces the saved photo.
+    clearPhoto();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (fileUrl) URL.revokeObjectURL(fileUrl);
@@ -178,8 +186,22 @@ export default function LiveCamera({
     stopAll();
     const url = URL.createObjectURL(file);
     setFileUrl(url);
-    setSource(file.type.startsWith("video/") ? "video" : "image");
+    const isVideo = file.type.startsWith("video/");
+    setSource(isVideo ? "video" : "image");
+    // Photos are kept so they come back with the lot map after a reload.
+    if (!isVideo) savePhoto(file);
   };
+
+  // After a reload: bring back the photo the saved lot map belongs to.
+  useEffect(() => {
+    let cancelled = false;
+    loadPhoto().then((blob) => {
+      if (cancelled || !blob || !calRef.current?.stalls?.length) return;
+      setFileUrl(URL.createObjectURL(blob));
+      setSource((current) => (current === SOURCES_IDLE ? "image" : current));
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const openPhone = () => {
     stopAll();
@@ -344,7 +366,7 @@ export default function LiveCamera({
     });
     liveRef.current = { tracks, pending: trackerRef.current.pending(), statuses, lastBoxes: result.boxes };
     const c = occupancyCounts(cal.stalls, statuses);
-    setCounts({ vehicles: tracks.filter((t) => t.state !== "lost").length, occupied: c.taken, free: c.open });
+    setCounts({ vehicles: tracks.filter((t) => t.state !== "lost").length, occupied: c.taken, free: c.open, ready: true });
     if (el) {
       sampleColors(el, tracks, cycleRef.current % 20 === 0);
       snapshotFrame(el, isStill);
@@ -558,8 +580,8 @@ export default function LiveCamera({
       const { painted, fromCars } = result.stats;
       setNotice(
         result.stalls.length
-          ? `Found ${result.stalls.length} spaces — ${painted} from painted lines, ${fromCars} from parked cars.${view !== "overhead" ? " Painted lines are read in Overhead view only." : ""} Fix any with Erase / Stall row.`
-          : manual ? "No spaces found. Draw a row with Stall row, or switch Camera view to Overhead for a top-down picture." : null,
+          ? `Found ${result.stalls.length} spaces — ${painted} from painted lines, ${fromCars} from parked cars.${view !== "overhead" ? " Painted lines are read in Overhead view only." : ""} Fix any with Remove space / Add row of spaces.`
+          : manual ? "No spaces found. Use Add row of spaces, or switch Camera view to Overhead for a top-down picture." : null,
       );
     } catch (err) {
       setNotice(err?.message || "Could not find spaces in this picture");
@@ -658,17 +680,17 @@ export default function LiveCamera({
                   <div className="text-[9px] uppercase tracking-wider text-neutral-400">spaces</div>
                 </div>
                 <div className="rounded-lg bg-green-500/90 px-3 py-1.5 text-neutral-950">
-                  <div className="text-lg font-bold leading-none">{counts.free}</div>
+                  <div className="text-lg font-bold leading-none">{counts.ready ? counts.free : "…"}</div>
                   <div className="text-[9px] uppercase tracking-wider">open</div>
                 </div>
                 <div className="rounded-lg bg-red-500/85 px-3 py-1.5 text-white">
-                  <div className="text-lg font-bold leading-none">{counts.occupied}</div>
+                  <div className="text-lg font-bold leading-none">{counts.ready ? counts.occupied : "…"}</div>
                   <div className="text-[9px] uppercase tracking-wider">taken</div>
                 </div>
               </>
             )}
             <div className="rounded-lg bg-black/75 px-3 py-1.5 text-green-300">
-              <div className="text-lg font-bold leading-none">{counts.vehicles}</div>
+              <div className="text-lg font-bold leading-none">{counts.ready ? counts.vehicles : "…"}</div>
               <div className="text-[9px] uppercase tracking-wider text-neutral-400">cars</div>
             </div>
           </div>
@@ -710,11 +732,14 @@ export default function LiveCamera({
       {/* Lot mapping tools */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 text-[10px] font-semibold tracking-[0.18em] text-neutral-500">MAP THE LOT</span>
-        {Object.entries(TOOLS).map(([key, t]) => (
+        {Object.entries(TOOLS).filter(([key]) => moreTools || MAIN_TOOLS.includes(key)).map(([key, t]) => (
           <Btn key={key} disabled={!streaming} active={tool === key} tone={t.color} onClick={() => { setDraft([]); setTool(tool === key ? null : key); }}>
             <t.icon className="h-3.5 w-3.5" /> {t.label}
           </Btn>
         ))}
+        <button onClick={() => setMoreTools((v) => !v)} className="text-[11px] text-neutral-500 underline-offset-2 hover:text-neutral-300 hover:underline">
+          {moreTools ? "Fewer tools" : "More tools"}
+        </button>
         {tool === "row" && (
           <label className="flex items-center gap-1 text-[11px] text-neutral-300">
             stalls in row
