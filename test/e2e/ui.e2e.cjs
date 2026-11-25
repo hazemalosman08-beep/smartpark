@@ -37,7 +37,7 @@ const BASE = process.env.BASE_URL || 'http://localhost:5199';
   // wait into the "stopped" part of the clip and check the car's state
   await p.waitForTimeout(9000);
   const spots = (await p.locator('section', { hasText: 'VEHICLES' }).innerText()).match(/in [A-Z]+\d+/g) || [];
-  console.log('spot labels', spots, 'unique', new Set(spots).size === spots.length);
+  console.log('spot labels', spots.length, 'unique', new Set(spots).size === spots.length);
   await p.screenshot({ path: OUT + 'lot_camera2.png' });
   console.log('vehicles panel:', (await p.locator('section', { hasText: 'VEHICLES' }).innerText()).replace(/\n/g, ' | ').slice(0, 600));
   console.log('activity:', (await p.locator('section', { hasText: 'ACTIVITY' }).innerText()).replace(/\n/g, ' | ').slice(0, 600));

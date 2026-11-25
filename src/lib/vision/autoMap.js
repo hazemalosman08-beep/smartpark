@@ -1,7 +1,7 @@
 // One-click lot mapping: painted stall lines + parked cars -> stalls, aisles and
 // an entrance, ready for counting and for the top-down plan.
 import { findStalls } from "./stallFinder.js";
-import { nextRowLetter, stallsFromVehicles } from "./lot.js";
+import { dedupeStalls, nextRowLetter, stallsFromVehicles } from "./lot.js";
 
 /**
  * image: { data, width, height }; vehicles: boxes in % (parked/standing cars);
@@ -34,7 +34,7 @@ export function autoMapLot({ image, vehicles = [], view = "overhead", keepStalls
   const painted = stalls.length - keepStalls.length;
   // Cars standing where no painted stall was found (lines hidden under cars).
   const fromCars = stallsFromVehicles(vehicles, view, stalls, { auto: true });
-  stalls = [...stalls, ...fromCars];
+  stalls = dedupeStalls([...stalls, ...fromCars]);
 
   const lanes = [...keepLanes, ...found.aisles.map((a) => ({ ...a, auto: true }))];
   // Entrance guess: the aisle end nearest the bottom of the picture.
@@ -44,5 +44,5 @@ export function autoMapLot({ image, vehicles = [], view = "overhead", keepStalls
     const best = ends.reduce((p, q) => (q.y > p.y ? q : p));
     autoEntrance = { x: best.x, y: Math.min(99, best.y), auto: true };
   }
-  return { stalls, lanes, entrance: autoEntrance, stats: { painted, fromCars: fromCars.length, rows: found.debug.rows } };
+  return { stalls, lanes, entrance: autoEntrance, stats: { painted: stalls.filter((x) => x.auto && !x.learned).length, fromCars: stalls.filter((x) => x.learned).length, rows: found.debug.rows } };
 }

@@ -7,7 +7,7 @@ import { makePairCode, receivePhoneCamera } from "@/lib/phoneLink";
 import { detectVehiclesLocal, onDetectorStatus, preloadDetector, setDetectorModel, MODELS } from "@/lib/vision/vehicleDetector";
 import { createTracker } from "@/lib/vision/tracker";
 import {
-  assignVehiclesToStalls, createOccupancy, groundPoint, guessView, makeStallRow, nextRowLetter,
+  assignVehiclesToStalls, createOccupancy, dedupeStalls, occupancyCounts, groundPoint, guessView, makeStallRow, nextRowLetter,
 } from "@/lib/vision/lot";
 import { drawOverlay } from "@/lib/vision/overlay";
 import { autoMapLot } from "@/lib/vision/autoMap";
@@ -96,6 +96,16 @@ export default function LiveCamera({
   onUpdateRef.current = onUpdate;
 
   useEffect(() => onDetectorStatus(setDetector), []);
+  // Development only: lets the accuracy test read exactly what the app decided.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return undefined;
+    window.__smartparkLive = () => ({
+      stalls: calRef.current.stalls,
+      statuses: [...(liveRef.current.statuses || new Map()).entries()],
+      vehicles: liveRef.current.tracks.filter((t) => t.state !== "lost").length,
+    });
+    return () => { delete window.__smartparkLive; };
+  }, []);
 
   // ---------------------------------------------------------------- sources
   const media = useCallback(() => {
@@ -331,8 +341,8 @@ export default function LiveCamera({
       view, now, still: isStill, appearance: view === "overhead" ? appearanceRef.current : null,
     });
     liveRef.current = { tracks, pending: trackerRef.current.pending(), statuses, lastBoxes: result.boxes };
-    const occupied = [...statuses.values()].filter((s) => s.status === "occupied").length;
-    setCounts({ vehicles: tracks.filter((t) => t.state !== "lost").length, occupied, free: statuses.size - occupied });
+    const c = occupancyCounts(cal.stalls, statuses);
+    setCounts({ vehicles: tracks.filter((t) => t.state !== "lost").length, occupied: c.taken, free: c.open });
     if (el) {
       sampleColors(el, tracks, cycleRef.current % 20 === 0);
       snapshotFrame(el, isStill);
@@ -418,8 +428,8 @@ export default function LiveCamera({
     appearanceRef.current = appearance;
     const statuses = occupancyRef.current.update(calibration.stalls, present, { view, still: true, appearance });
     liveRef.current = { ...liveRef.current, statuses };
-    const occupied = [...statuses.values()].filter((s) => s.status === "occupied").length;
-    setCounts((c) => ({ ...c, occupied, free: statuses.size - occupied }));
+    const counted = occupancyCounts(calibration.stalls, statuses);
+    setCounts((c) => ({ ...c, occupied: counted.taken, free: counted.open }));
     onUpdateRef.current?.({ tracks, statuses, events: [], streaming: true, still });
   }, [calibration.stalls, calibration.view]);
 
@@ -477,7 +487,8 @@ export default function LiveCamera({
     if (tool === "row" || tool === "stall") {
       const row = nextRowLetter(cal.stalls);
       const stalls = makeStallRow(points, tool === "row" ? Math.max(1, Math.min(60, rowCount)) : 1, row);
-      update({ stalls: [...cal.stalls, ...stalls] });
+      // Hand-drawn spaces replace any found automatically in the same place.
+      update({ stalls: dedupeStalls([...cal.stalls, ...stalls]) });
     } else if (tool === "entrance") update({ entrance: points[0] });
     else if (tool === "exit") update({ exit: points[0] });
     else if (tool === "ground") update({ ground: { quad: points, width: groundSize.width, length: groundSize.length } });

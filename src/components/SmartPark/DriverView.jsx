@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, CornerUpLeft, CornerUpRight, Expand, Minimize, ParkingSquare, RotateCcw } from "lucide-react";
 import DriverMap from "@/components/SmartPark/DriverMap";
-import { directionsFor, pathLength } from "@/lib/vision/lot";
+import { directionsFor, occupancyCounts, pathLength } from "@/lib/vision/lot";
 
 const STEP_ICON = { straight: ArrowUp, left: CornerUpLeft, right: CornerUpRight, park: ParkingSquare, uturn: RotateCcw };
 
@@ -11,9 +11,7 @@ export default function DriverView({ lot, statuses, recommended, route, backdrop
   const [fullscreen, setFullscreen] = useState(false);
   const [photo, setPhoto] = useState(false);
   const [clock, setClock] = useState(() => new Date());
-  const total = lot.stalls.length;
-  const open = lot.stalls.filter((s) => statuses?.get(s.id)?.status !== "occupied").length;
-  const pct = total ? Math.round(((total - open) / total) * 100) : 0;
+  const { total, open, percent: pct } = occupancyCounts(lot.stalls, statuses);
   const steps = useMemo(() => directionsFor(route, recommended, lot.metersPerUnit), [route, recommended, lot.metersPerUnit]);
   const meters = route?.length ? Math.round(pathLength(route) * lot.metersPerUnit) : null;
   const full = total > 0 && open === 0;

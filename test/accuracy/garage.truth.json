@@ -1,0 +1,315 @@
+{
+ "image": "garage.png",
+ "width": 678,
+ "height": 452,
+ "view": "overhead",
+ "note": "Hand-labelled centre of every painted space. Partial spaces cut by the right edge are not included.",
+ "spaces": [
+  {
+   "label": "624",
+   "x": 107,
+   "y": 128,
+   "occupied": true
+  },
+  {
+   "label": "623",
+   "x": 138,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "622",
+   "x": 170,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "621",
+   "x": 202,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "620",
+   "x": 233,
+   "y": 128,
+   "occupied": true
+  },
+  {
+   "label": "619",
+   "x": 264,
+   "y": 128,
+   "occupied": true
+  },
+  {
+   "label": "618",
+   "x": 295,
+   "y": 128,
+   "occupied": true
+  },
+  {
+   "label": "617",
+   "x": 325,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "616",
+   "x": 355,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "615",
+   "x": 386,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "614",
+   "x": 416,
+   "y": 128,
+   "occupied": true
+  },
+  {
+   "label": "613",
+   "x": 446,
+   "y": 128,
+   "occupied": true
+  },
+  {
+   "label": "612",
+   "x": 476,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "611",
+   "x": 506,
+   "y": 128,
+   "occupied": true
+  },
+  {
+   "label": "610",
+   "x": 537,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "609",
+   "x": 567,
+   "y": 128,
+   "occupied": true
+  },
+  {
+   "label": "608",
+   "x": 597,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "607",
+   "x": 627,
+   "y": 128,
+   "occupied": true
+  },
+  {
+   "label": "606",
+   "x": 657,
+   "y": 128,
+   "occupied": false
+  },
+  {
+   "label": "U1",
+   "x": 151,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U2",
+   "x": 184,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U3",
+   "x": 216,
+   "y": 265,
+   "occupied": true
+  },
+  {
+   "label": "U4",
+   "x": 249,
+   "y": 265,
+   "occupied": true
+  },
+  {
+   "label": "U5",
+   "x": 282,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U6",
+   "x": 315,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U7",
+   "x": 348,
+   "y": 265,
+   "occupied": true
+  },
+  {
+   "label": "U8",
+   "x": 381,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U9",
+   "x": 414,
+   "y": 265,
+   "occupied": true
+  },
+  {
+   "label": "U10",
+   "x": 446,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U11",
+   "x": 479,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U12",
+   "x": 511,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U13",
+   "x": 544,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U14",
+   "x": 576,
+   "y": 265,
+   "occupied": true
+  },
+  {
+   "label": "U15",
+   "x": 609,
+   "y": 265,
+   "occupied": false
+  },
+  {
+   "label": "U16",
+   "x": 642,
+   "y": 265,
+   "occupied": true
+  },
+  {
+   "label": "664",
+   "x": 142,
+   "y": 335,
+   "occupied": true
+  },
+  {
+   "label": "663",
+   "x": 177,
+   "y": 335,
+   "occupied": true
+  },
+  {
+   "label": "662",
+   "x": 211,
+   "y": 335,
+   "occupied": false
+  },
+  {
+   "label": "661",
+   "x": 246,
+   "y": 335,
+   "occupied": true
+  },
+  {
+   "label": "660",
+   "x": 282,
+   "y": 335,
+   "occupied": false
+  },
+  {
+   "label": "659",
+   "x": 315,
+   "y": 335,
+   "occupied": false
+  },
+  {
+   "label": "658",
+   "x": 348,
+   "y": 335,
+   "occupied": false
+  },
+  {
+   "label": "657",
+   "x": 381,
+   "y": 335,
+   "occupied": false
+  },
+  {
+   "label": "656",
+   "x": 414,
+   "y": 335,
+   "occupied": true
+  },
+  {
+   "label": "655",
+   "x": 446,
+   "y": 335,
+   "occupied": false
+  },
+  {
+   "label": "654",
+   "x": 479,
+   "y": 335,
+   "occupied": false
+  },
+  {
+   "label": "653",
+   "x": 512,
+   "y": 335,
+   "occupied": true
+  },
+  {
+   "label": "652",
+   "x": 545,
+   "y": 335,
+   "occupied": false
+  },
+  {
+   "label": "651",
+   "x": 577,
+   "y": 335,
+   "occupied": true
+  },
+  {
+   "label": "650",
+   "x": 611,
+   "y": 335,
+   "occupied": false
+  },
+  {
+   "label": "649",
+   "x": 644,
+   "y": 335,
+   "occupied": false
+  }
+ ]
+}

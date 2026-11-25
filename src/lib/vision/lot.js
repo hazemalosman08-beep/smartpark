@@ -82,6 +82,15 @@ export function vehicleFootprint(box, view = "angled") {
   return boxToPolygon({ x: box.x + box.w * 0.1, y: box.y + box.h * 0.45, w: box.w * 0.8, h: box.h * 0.55 });
 }
 
+// The part of a vehicle used to decide which space it occupies. From an angle
+// only the bottom 35% of the box is the car's contact with the ground; the rest
+// is body and roof, which on a tall SUV or van covers the space behind it.
+// From above the whole box is the footprint.
+export function occupancyFootprint(box, view = "angled") {
+  if (view === "overhead") return vehicleFootprint(box, view);
+  return boxToPolygon({ x: box.x + box.w * 0.1, y: box.y + box.h * 0.65, w: box.w * 0.8, h: box.h * 0.35 });
+}
+
 // A stall shaped like the footprint of a vehicle parked there (used to learn
 // stalls from parked cars where the paint is not visible).
 export function stallFromVehicle(box, view, row, index) {
@@ -225,7 +234,7 @@ export function deriveLot(calibration) {
 // Stall occupancy with temporal hysteresis.
 
 function claimScore(stall, box, view) {
-  const foot = vehicleFootprint(box, view);
+  const foot = occupancyFootprint(box, view);
   const stallArea = polygonArea(stall.poly);
   const footArea = polygonArea(foot);
   if (!stallArea || !footArea) return 0;
@@ -537,4 +546,51 @@ export function directionsFor(route, stall, metersPerUnit = 1) {
     steps.push({ kind: "park", text: `Park in ${stall.label}` });
   }
   return steps;
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate spaces: any two spaces overlapping by more than 30% (intersection
+// over union) are one space. The more trustworthy source wins: drawn by hand,
+// then painted lines, then inferred from a parked car. Two spaces inferred from
+// parked cars are only merged when the cars stand in the same place (angled
+// neighbours' boxes overlap a lot but are two real spaces).
+const stallRank = (s) => (!s.auto && !s.learned ? 0 : s.learned ? 2 : 1);
+
+export function stallIoU(a, b) {
+  const inter = polygonOverlapArea(a.poly, b.poly);
+  if (!inter) return 0;
+  return inter / (polygonArea(a.poly) + polygonArea(b.poly) - inter);
+}
+
+export function dedupeStalls(stalls, threshold = 0.3) {
+  const order = stalls.map((s, i) => ({ s, i })).sort((a, b) => stallRank(a.s) - stallRank(b.s) || a.i - b.i);
+  const kept = [];
+  for (const { s } of order) {
+    const clash = kept.some((k) => {
+      if (stallIoU(s, k) <= threshold) return false;
+      // A space inferred from a parked car is the same space only if the car
+      // stands in the middle of the other one (both centres close together).
+      // Angled neighbours, or an oversized neighbouring space reaching over the
+      // car's box, overlap a lot but are separate real spaces.
+      if (stallRank(s) === 2 || stallRank(k) === 2) {
+        const size = Math.sqrt(Math.min(polygonArea(s.poly), polygonArea(k.poly)));
+        return dist(polygonCentroid(s.poly), polygonCentroid(k.poly)) < size * 0.5;
+      }
+      return true;
+    });
+    if (!clash) kept.push(s);
+  }
+  // Keep the original order (row/number order) for everything that stays.
+  const keep = new Set(kept);
+  return stalls.filter((s) => keep.has(s));
+}
+
+// The one place open/taken numbers are counted. Every screen (camera counter,
+// Lot tab, Driver screen) calls this with the same spaces and statuses, so they
+// always agree.
+export function occupancyCounts(stalls = [], statuses) {
+  let taken = 0;
+  for (const s of stalls) if (statuses?.get?.(s.id)?.status === "occupied") taken += 1;
+  const total = stalls.length;
+  return { total, taken, open: total - taken, percent: total ? Math.round((taken / total) * 100) : 0 };
 }

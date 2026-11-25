@@ -8,7 +8,7 @@ import { EmptyLot, EventLog, GuidanceCard, OccupancyCard, SimulationCard, Vehicl
 import useVehicleSessions from "@/hooks/useVehicleSessions";
 import { loadLocalCalibration, saveLocalCalibration } from "@/lib/lotLayout";
 import {
-  EMPTY_CALIBRATION, buildLaneGraph, deriveLot, distancesFrom, normalizeCalibration, pathLength, recommendStall,
+  EMPTY_CALIBRATION, buildLaneGraph, deriveLot, distancesFrom, normalizeCalibration, occupancyCounts, pathLength, recommendStall,
   routeToStall, sampleCalibration,
 } from "@/lib/vision/lot";
 import { createSimulation } from "@/lib/vision/simulation";
@@ -149,14 +149,18 @@ export default function Home() {
 
   // ------------------------------------------------------------- plan data
   const shown = mode === "camera" ? live : sim;
-  const occupied = lot.stalls.filter((s) => shown.statuses.get(s.id)?.status === "occupied").length;
+  // Real occupancy: the camera when it runs, otherwise the plan's own traffic.
+  // Every number on every screen comes from this; the Guide demo only animates.
+  const realStatuses = live.streaming ? live.statuses : sim.statuses;
+  const counts = occupancyCounts(lot.stalls, realStatuses);
+  const occupied = counts.taken;
   const occupiedKey = lot.stalls.map((s) => (shown.statuses.get(s.id)?.status === "occupied" ? 1 : 0)).join("");
   const recommended = useMemo(() => recommendStall(lot, graph, shown.statuses, lot.entrance, fromEntrance),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lot, graph, fromEntrance, occupiedKey]);
   const route = useMemo(() => (recommended && lot.entrance ? routeToStall(lot, graph, recommended) : []), [lot, graph, recommended]);
   // The driver screen always follows the real lot (camera), not the demo traffic.
-  const driverStatuses = live.streaming ? live.statuses : sim.statuses;
+  const driverStatuses = realStatuses;
   const driverKey = lot.stalls.map((s) => (driverStatuses.get(s.id)?.status === "occupied" ? 1 : 0)).join("");
   const liveRecommended = useMemo(() => recommendStall(lot, graph, driverStatuses, lot.entrance, fromEntrance),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -199,7 +203,7 @@ export default function Home() {
           {lot.stalls.length ? (
             <DriverView
               lot={lot}
-              statuses={live.streaming ? live.statuses : sim.statuses}
+              statuses={realStatuses}
               recommended={liveRecommended}
               route={liveRoute}
               backdrop={backdrop}
@@ -237,6 +241,11 @@ export default function Home() {
               <p className="border-b border-neutral-800 bg-sky-500/5 px-3 py-1.5 text-[11px] text-sky-200">
                 The plan follows the camera's perspective. For a true-to-scale plan, use <b>Lot corners</b> on the Camera tab
                 and enter the lot's size in metres.
+              </p>
+            )}
+            {mode === "sim" && live.streaming && (
+              <p className="border-b border-neutral-800 bg-violet-500/5 px-3 py-1.5 text-[11px] text-violet-200">
+                Guide demo: the cars moving on this map are animated. The numbers on the right stay live from the camera.
               </p>
             )}
             <div className="relative flex-1">
