@@ -7,10 +7,12 @@ import { makePairCode, receivePhoneCamera } from "@/lib/phoneLink";
 import { detectVehiclesLocal, onDetectorStatus, preloadDetector, setDetectorModel, MODELS } from "@/lib/vision/vehicleDetector";
 import { createTracker } from "@/lib/vision/tracker";
 import {
-  assignVehiclesToStalls, createOccupancy, groundPoint, makeStallRow, nextRowLetter, stallFromVehicle, stallUnder,
+  assignVehiclesToStalls, createOccupancy, groundPoint, guessView, makeStallRow, nextRowLetter,
 } from "@/lib/vision/lot";
 import { drawOverlay } from "@/lib/vision/overlay";
-import { iou, pointInPolygon, projectOnSegment } from "@/lib/vision/geometry";
+import { autoMapLot } from "@/lib/vision/autoMap";
+import { imagePixels } from "@/lib/vision/stallFinder";
+import { pointInPolygon, projectOnSegment } from "@/lib/vision/geometry";
 
 const TOOLS = {
   row: { label: "Stall row", icon: Grid3x3, points: 4, color: "#22d3ee", hint: ["Click the front-left corner of the row (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
@@ -75,6 +77,11 @@ export default function LiveCamera({
   const trackerRef = useRef(createTracker());
   const occupancyRef = useRef(createOccupancy());
   const issuedRef = useRef(new Set()); // IDs handed out in this camera session
+  const cycleRef = useRef(0);
+  const autoDoneRef = useRef(new Set()); // sources already mapped automatically
+  const sourceKeyRef = useRef("");
+  const sourceStartRef = useRef(0);
+  const findSpacesRef = useRef(null);
   const liveRef = useRef({ tracks: [], pending: [], statuses: new Map(), lastBoxes: [] });
   const cursorRef = useRef(null);
   const calRef = useRef(calibration);
@@ -115,6 +122,7 @@ export default function LiveCamera({
     trackerRef.current.reset();
     occupancyRef.current.reset();
     issuedRef.current = new Set();
+    colorsRef.current = new Map();
     liveRef.current = { tracks: [], pending: [], statuses: new Map(), lastBoxes: [] };
     setCounts({ vehicles: 0, free: 0, occupied: 0 });
     onUpdateRef.current?.({ tracks: [], statuses: new Map(), events: [], streaming: false });
@@ -175,6 +183,11 @@ export default function LiveCamera({
   }, [phoneStream]);
 
   useEffect(() => () => streamRef.current?.getTracks().forEach((t) => t.stop()), []);
+  useEffect(() => {
+    sourceKeyRef.current = `${source}:${fileUrl || remoteCode}`;
+    sourceStartRef.current = Date.now();
+    lastFrameAt.current = 0;
+  }, [source, fileUrl, remoteCode]);
   useEffect(() => { preloadDetector(); }, []);
 
   // Paste an image/video straight into the page.
@@ -234,7 +247,54 @@ export default function LiveCamera({
 
   // ---------------------------------------------------------- detection loop
   const still = source === "image" || frozen;
-  const process = useCallback((result, isStill) => {
+  // Real paint colour of each tracked car (used to draw it on the plan).
+  const colorsRef = useRef(new Map());
+  const sampleCanvas = useRef(null);
+  const sampleColors = (el, tracks, every) => {
+    if (!sampleCanvas.current) sampleCanvas.current = document.createElement("canvas");
+    const c = sampleCanvas.current;
+    c.width = 1; c.height = 1;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    const { width, height } = mediaSize(el);
+    for (const t of tracks) {
+      if (t.state === "lost" || (colorsRef.current.has(t.key) && !every)) continue;
+      // Centre of the body (roof / bonnet), averaged down to one pixel.
+      const x = ((t.x + t.w * 0.3) / 100) * width, y = ((t.y + t.h * 0.3) / 100) * height;
+      const w = Math.max(1, (t.w * 0.4 / 100) * width), h = Math.max(1, (t.h * 0.4 / 100) * height);
+      try {
+        ctx.drawImage(el, x, y, w, h, 0, 0, 1, 1);
+        const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+        colorsRef.current.set(t.key, `rgb(${r},${g},${b})`);
+      } catch { /* frame not readable yet */ }
+    }
+    for (const key of colorsRef.current.keys()) if (!tracks.some((t) => t.key === key)) colorsRef.current.delete(key);
+  };
+
+  // A recent picture of the lot for the plan's photo backdrop.
+  const lastFrameAt = useRef(0);
+  const frameUrlRef = useRef(null);
+  const snapshotFrame = (el, isStill) => {
+    const now = Date.now();
+    if (now - lastFrameAt.current < (isStill ? 0 : 1500)) return null;
+    lastFrameAt.current = now;
+    const { width, height } = mediaSize(el);
+    const scale = Math.min(1, 1280 / Math.max(width, height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    canvas.getContext("2d").drawImage(el, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const old = frameUrlRef.current;
+      frameUrlRef.current = url;
+      onUpdateRef.current?.({ frame: { url, width: canvas.width, height: canvas.height } });
+      if (old) setTimeout(() => URL.revokeObjectURL(old), 4000);
+    }, "image/jpeg", 0.82);
+    return true;
+  };
+
+  const process = useCallback((result, isStill, el) => {
     const cal = calRef.current;
     const lotNow = lotRef.current;
     const view = cal.view || "angled";
@@ -263,7 +323,20 @@ export default function LiveCamera({
     liveRef.current = { tracks, pending: trackerRef.current.pending(), statuses, lastBoxes: result.boxes };
     const occupied = [...statuses.values()].filter((s) => s.status === "occupied").length;
     setCounts({ vehicles: tracks.filter((t) => t.state !== "lost").length, occupied, free: statuses.size - occupied });
-    onUpdateRef.current?.({ tracks, statuses, events, streaming: true, still: isStill });
+    if (el) {
+      sampleColors(el, tracks, cycleRef.current % 20 === 0);
+      snapshotFrame(el, isStill);
+    }
+    const coloured = tracks.map((t) => ({ ...t, color: colorsRef.current.get(t.key) }));
+    liveRef.current.tracks = coloured;
+    onUpdateRef.current?.({ tracks: coloured, statuses, events, streaming: true, still: isStill });
+    // First look at a new picture with no spaces mapped: find them automatically.
+    const key = sourceKeyRef.current;
+    const settled = isStill || Date.now() - sourceStartRef.current > 4000;
+    if (el && settled && !autoDoneRef.current.has(key) && !cal.stalls.length && tracks.length) {
+      autoDoneRef.current.add(key);
+      findSpacesRef.current?.(el, false);
+    }
   }, []);
 
   useEffect(() => {
@@ -288,7 +361,8 @@ export default function LiveCamera({
         try {
           const result = await detectVehiclesLocal(el, { tiles: tiling === "off" && !isStill ? false : tiles });
           if (cancelled) break;
-          process(result, isStill);
+          cycleRef.current = cycle;
+          process(result, isStill, el);
           if (isStill) lastStillKey = key;
           frames += 1;
           const elapsed = performance.now() - windowStart;
@@ -417,34 +491,36 @@ export default function LiveCamera({
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  // Stalls learned from cars that are parked right now.
-  const learnStalls = () => {
+  // Find the parking spaces automatically: painted stall lines (overhead
+  // pictures) plus every parked car that is not inside a found space.
+  const findSpaces = (el = mediaRef.current(), manual = true) => {
+    if (!mediaReady(el)) return;
     const cal = calRef.current;
-    const view = cal.view || "angled";
-    const parked = liveRef.current.tracks.filter((t) => t.state !== "lost" && (still || t.motion !== "moving"));
-    const rows = [];
-    // Group by vertical position into rows, then number left to right.
-    [...parked].sort((a, b) => groundPoint(a, view).y - groundPoint(b, view).y).forEach((t) => {
-      const g = groundPoint(t, view);
-      const row = rows.find((r) => Math.abs(r.y - g.y) < t.h * 0.5);
-      if (row) { row.items.push(t); row.y = (row.y * (row.items.length - 1) + g.y) / row.items.length; } else rows.push({ y: g.y, items: [t] });
-    });
-    const added = [];
-    let stalls = [...cal.stalls];
-    rows.forEach((r) => {
-      const letter = nextRowLetter(stalls);
-      let index = 1;
-      r.items.sort((a, b) => a.x - b.x).forEach((t) => {
-        if (stallUnder(stalls, t, view)) return;
-        const stall = stallFromVehicle(t, view, letter, index++);
-        if (stalls.some((s) => iou(boxOfPoly(s.poly), boxOfPoly(stall.poly)) > 0.3)) return;
-        stalls.push(stall);
-        added.push(stall);
+    const vehicles = liveRef.current.tracks.filter((t) => t.state !== "lost" && (still || t.motion !== "moving"));
+    // First automatic run on an empty map: work out whether the camera looks
+    // straight down or from the side.
+    const view = (!manual && !cal.stalls.length && guessView(vehicles)) || cal.view || "angled";
+    try {
+      const result = autoMapLot({
+        image: imagePixels(el),
+        vehicles,
+        view,
+        keepStalls: cal.stalls.filter((st) => !st.auto),
+        keepLanes: cal.lanes.filter((l) => !l.auto),
+        entrance: cal.entrance && !cal.entrance.auto ? cal.entrance : null,
       });
-    });
-    if (added.length) update({ stalls });
-    setNotice(added.length ? `Added ${added.length} stall${added.length === 1 ? "" : "s"} from parked cars.` : "No parked cars outside existing stalls. Cars must be standing still for a few seconds.");
+      update({ stalls: result.stalls, lanes: result.lanes, entrance: result.entrance ?? cal.entrance, view });
+      const { painted, fromCars } = result.stats;
+      setNotice(
+        result.stalls.length
+          ? `Found ${result.stalls.length} spaces — ${painted} from painted lines, ${fromCars} from parked cars.${view !== "overhead" ? " Painted lines are read in Overhead view only." : ""} Fix any with Erase / Stall row.`
+          : manual ? "No spaces found. Draw a row with Stall row, or switch Camera view to Overhead for a top-down picture." : null,
+      );
+    } catch (err) {
+      setNotice(err?.message || "Could not find spaces in this picture");
+    }
   };
+  findSpacesRef.current = findSpaces;
 
   const streaming = source !== SOURCES_IDLE;
   const spec = tool ? TOOLS[tool] : null;
@@ -529,8 +605,27 @@ export default function LiveCamera({
           </div>
         )}
         {streaming && (
-          <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/70 px-2.5 py-1 font-mono text-[11px] text-green-300">
-            {counts.vehicles} vehicles{calibration.stalls.length > 0 && <> · {counts.occupied}/{calibration.stalls.length} taken · {counts.free} free</>}
+          <div className="pointer-events-none absolute right-3 top-3 flex items-stretch gap-1.5 text-right font-mono">
+            {calibration.stalls.length > 0 && (
+              <>
+                <div className="rounded-lg bg-black/75 px-3 py-1.5">
+                  <div className="text-lg font-bold leading-none text-white">{calibration.stalls.length}</div>
+                  <div className="text-[9px] uppercase tracking-wider text-neutral-400">spaces</div>
+                </div>
+                <div className="rounded-lg bg-green-500/90 px-3 py-1.5 text-neutral-950">
+                  <div className="text-lg font-bold leading-none">{counts.free}</div>
+                  <div className="text-[9px] uppercase tracking-wider">open</div>
+                </div>
+                <div className="rounded-lg bg-red-500/85 px-3 py-1.5 text-white">
+                  <div className="text-lg font-bold leading-none">{counts.occupied}</div>
+                  <div className="text-[9px] uppercase tracking-wider">taken</div>
+                </div>
+              </>
+            )}
+            <div className="rounded-lg bg-black/75 px-3 py-1.5 text-green-300">
+              <div className="text-lg font-bold leading-none">{counts.vehicles}</div>
+              <div className="text-[9px] uppercase tracking-wider text-neutral-400">cars</div>
+            </div>
           </div>
         )}
         {hint && (
@@ -592,7 +687,7 @@ export default function LiveCamera({
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 text-[10px] font-semibold tracking-[0.18em] text-neutral-500">AUTO</span>
-        <Btn disabled={!streaming} onClick={learnStalls}><Sparkles className="h-3.5 w-3.5" /> Stalls from parked cars</Btn>
+        <Btn disabled={!streaming} onClick={() => findSpaces()}><Sparkles className="h-3.5 w-3.5" /> Find spaces automatically</Btn>
         <span className="ml-2 text-[11px] text-neutral-400">Camera view:</span>
         <Btn active={calibration.view !== "overhead"} onClick={() => update({ view: "angled" })}>Angled</Btn>
         <Btn active={calibration.view === "overhead"} onClick={() => update({ view: "overhead" })}>Overhead</Btn>
@@ -616,11 +711,6 @@ export default function LiveCamera({
     </div>
   );
 }
-
-const boxOfPoly = (poly) => {
-  const xs = poly.map((p) => p.x), ys = poly.map((p) => p.y);
-  return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
-};
 
 function FrozenFrame({ canvas, onReady }) {
   const ref = useRef(null);

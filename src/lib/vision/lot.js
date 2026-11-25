@@ -89,6 +89,46 @@ export function stallFromVehicle(box, view, row, index) {
   return { id: `${row}${index}-${Math.random().toString(36).slice(2, 7)}`, row, index, label: `${row}${index}`, poly, learned: true };
 }
 
+// Overhead or angled? From above, cars at the top and bottom of the picture are
+// about the same size; from a low angle, far cars are much smaller.
+export function guessView(vehicles = []) {
+  if (vehicles.length < 4) return null;
+  const sorted = [...vehicles].sort((a, b) => a.y + a.h / 2 - (b.y + b.h / 2));
+  const k = Math.max(2, Math.floor(sorted.length / 3));
+  const size = (list) => list.reduce((s, v) => s + Math.sqrt(v.w * v.h), 0) / list.length;
+  const ratio = size(sorted.slice(0, k)) / size(sorted.slice(-k));
+  return ratio > 0.6 ? "overhead" : "angled";
+}
+
+// Stalls for parked cars that are not inside any stall yet, grouped into rows
+// (used where the paint is hidden under cars or not visible at all).
+export function stallsFromVehicles(vehicles, view = "angled", existing = [], { auto = false } = {}) {
+  const rows = [];
+  [...vehicles].sort((a, b) => groundPoint(a, view).y - groundPoint(b, view).y).forEach((v) => {
+    const g = groundPoint(v, view);
+    const row = rows.find((r) => Math.abs(r.y - g.y) < v.h * 0.5);
+    if (row) { row.items.push(v); row.y = (row.y * (row.items.length - 1) + g.y) / row.items.length; } else rows.push({ y: g.y, items: [v] });
+  });
+  const stalls = [...existing];
+  const added = [];
+  rows.forEach((r) => {
+    const letter = nextRowLetter(stalls);
+    let index = 1;
+    r.items.sort((a, b) => a.x - b.x).forEach((v) => {
+      if (stalls.some((s) => pointInPolygon(groundPoint(v, view), s.poly))) return;
+      if (stallUnder(stalls, v, view)) return;
+      const stall = { ...stallFromVehicle(v, view, letter, index), auto };
+      // Not on top of a stall that is already there.
+      const c = polygonCentroid(stall.poly);
+      if (stalls.some((s) => pointInPolygon(c, s.poly))) return;
+      index += 1;
+      stalls.push(stall);
+      added.push(stall);
+    });
+  });
+  return added;
+}
+
 // Stall centres from the AI layout mapper -> stall polygons sized by spacing.
 export function stallsFromCenters(centers = []) {
   const byRow = new Map();
@@ -306,6 +346,24 @@ export function buildLaneGraph(lanes, { step, snap } = {}) {
     for (let j = i + 1; j < nodes.length; j += 1) {
       if (laneOf[i] !== laneOf[j] && dist(nodes[i], nodes[j]) <= joinDist) add(i, j);
     }
+  }
+  // Lane ends: a lane that stops short of another (found aisles rarely touch)
+  // is joined to the nearest point of every other lane within reach, so the
+  // whole lot is drivable.
+  const ends = [];
+  lanes.forEach((_, li) => {
+    const ids = laneOf.map((l, i) => (l === li ? i : -1)).filter((i) => i >= 0);
+    if (ids.length) ends.push(ids[0], ids[ids.length - 1]);
+  });
+  const reach = Math.max(joinDist, span * 0.12);
+  for (const e of ends) {
+    const nearestByLane = new Map();
+    nodes.forEach((n, i) => {
+      if (laneOf[i] === laneOf[e]) return;
+      const d = dist(nodes[e], n);
+      if (d <= reach && d < (nearestByLane.get(laneOf[i])?.d ?? Infinity)) nearestByLane.set(laneOf[i], { i, d });
+    });
+    for (const { i } of nearestByLane.values()) add(e, i);
   }
   return { nodes, edges };
 }

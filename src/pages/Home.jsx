@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Radio, Shuffle } from "lucide-react";
+import { Camera, Image as ImageIcon, Map as MapIcon, Navigation, Radio } from "lucide-react";
 import TopBar from "@/components/SmartPark/TopBar";
 import LiveCamera from "@/components/SmartPark/LiveCamera";
 import LotView from "@/components/SmartPark/LotView";
@@ -11,6 +11,7 @@ import {
   routeToStall, sampleCalibration,
 } from "@/lib/vision/lot";
 import { createSimulation } from "@/lib/vision/simulation";
+import { warpFrameToPlan } from "@/lib/vision/warp";
 
 const EMPTY_MAP = new Map();
 
@@ -25,6 +26,9 @@ export default function Home() {
   const [simRate, setSimRate] = useState(6);
   const [sim, setSim] = useState({ tracks: [], statuses: EMPTY_MAP });
   const [selected, setSelected] = useState(null);
+  const [frame, setFrame] = useState(null); // latest camera picture { url, width, height }
+  const [photo, setPhoto] = useState(true); // plan backdrop: real photo or clean map
+  const [warped, setWarped] = useState(null);
   const vehicleSessions = useVehicleSessions();
 
   // ------------------------------------------------------------ calibration
@@ -43,6 +47,8 @@ export default function Home() {
   liveRef.current = live;
 
   const onLiveUpdate = useCallback((update) => {
+    if (update.frame) { setFrame(update.frame); return; }
+    if (!update.tracks) return;
     setLive({ tracks: update.tracks, statuses: update.statuses, streaming: update.streaming, still: update.still });
     if (update.events?.length) {
       pendingEvents.current.push(...update.events);
@@ -60,12 +66,53 @@ export default function Home() {
 
   const mode = source === "auto" ? (live.streaming ? "camera" : "sim") : source;
 
+  // Photo backdrop in plan coordinates. Without lot corners the plan IS the
+  // camera picture (scaled by its aspect); with them the picture is un-tilted.
+  useEffect(() => {
+    if (!frame || !lot.rectified) { setWarped(null); return undefined; }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      warpFrameToPlan(frame.url, lot).then((w) => {
+        if (cancelled) { URL.revokeObjectURL(w.href); return; }
+        setWarped((old) => { if (old) setTimeout(() => URL.revokeObjectURL(old.href), 2000); return w; });
+      }).catch(() => {});
+    }, 200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [frame, lot]);
+  const backdrop = useMemo(() => {
+    if (!frame || calibration.sample) return null;
+    if (lot.rectified) return warped;
+    return { href: frame.url, x: 0, y: 0, w: 100 * (calibration.aspect || frame.width / frame.height), h: 100 };
+  }, [frame, lot, warped, calibration.aspect, calibration.sample]);
+
   // ------------------------------------------------------------- simulation
   const simRef = useRef(null);
+  // The guide demo starts from the real lot: the cars the camera sees parked
+  // stay where they are (in their real colours), and new arrivals are guided
+  // to the best free space along the aisles.
+  const inSim = mode === "sim";
   useEffect(() => {
-    simRef.current = lot.stalls.length ? createSimulation(lot, graph, { arrivalsPerMinute: simRate }) : null;
-    setSim({ tracks: simRef.current?.tracks() || [], statuses: simRef.current?.statuses() || EMPTY_MAP });
-  }, [lot, graph]);
+    if (!lot.stalls.length) { simRef.current = null; setSim({ tracks: [], statuses: EMPTY_MAP }); return; }
+    const real = liveRef.current;
+    let seed = null;
+    if (real.statuses?.size) {
+      seed = new Map();
+      const byId = new Map(real.tracks.map((t) => [t.vehicle_id, t]));
+      for (const [stallId, st] of real.statuses) {
+        if (st.status === "occupied") seed.set(stallId, { vehicle_id: st.vehicle_id || undefined, color: byId.get(st.vehicle_id)?.color });
+      }
+    }
+    const rank = lot.entrance && graph.nodes.length
+      ? (stall) => {
+          let best = Infinity, node = -1;
+          graph.nodes.forEach((n, i) => { const d = Math.hypot(n.x - stall.front.x, n.y - stall.front.y); if (d < best) { best = d; node = i; } });
+          return (node >= 0 ? fromEntrance[node] : 0) + best;
+        }
+      : null;
+    simRef.current = createSimulation(lot, graph, { arrivalsPerMinute: simRate, seed, rank });
+    setSim({ tracks: simRef.current.tracks(), statuses: simRef.current.statuses() });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lot, graph, inSim]);
   useEffect(() => { simRef.current?.setRate(simRate); }, [simRate]);
 
   useEffect(() => {
@@ -151,10 +198,16 @@ export default function Home() {
                 <SourceBtn active={mode === "camera"} disabled={!live.streaming} onClick={() => setSource("camera")} title={live.streaming ? "Cars from the camera" : "Start a camera on the Camera tab"}>
                   <Radio className="h-3 w-3" /> Live camera
                 </SourceBtn>
-                <SourceBtn active={mode === "sim"} onClick={() => setSource("sim")}>
-                  <Shuffle className="h-3 w-3" /> Simulation
+                <SourceBtn active={mode === "sim"} onClick={() => setSource("sim")} title="Animated guide: new cars are led to the best free space">
+                  <Navigation className="h-3 w-3" /> Guide demo
                 </SourceBtn>
               </div>
+              {backdrop && (
+                <div className="flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 p-0.5 text-[11px]">
+                  <SourceBtn active={photo} onClick={() => setPhoto(true)} title="Show the real lot under the plan"><ImageIcon className="h-3 w-3" /> Photo</SourceBtn>
+                  <SourceBtn active={!photo} onClick={() => setPhoto(false)} title="Clean drawn map"><MapIcon className="h-3 w-3" /> Map</SourceBtn>
+                </div>
+              )}
             </div>
             {!lot.rectified && lot.stalls.length > 0 && !calibration.sample && calibration.view !== "overhead" && (
               <p className="border-b border-neutral-800 bg-sky-500/5 px-3 py-1.5 text-[11px] text-sky-200">
@@ -173,6 +226,8 @@ export default function Home() {
                     route={route}
                     selected={selected}
                     onSelect={setSelected}
+                    backdrop={backdrop}
+                    photo={photo}
                   />
                 </div>
               ) : (

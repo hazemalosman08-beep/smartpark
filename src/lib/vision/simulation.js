@@ -7,7 +7,16 @@ import { makeVehicleId } from "../vehicleSessions.js";
 
 const COLORS = ["#e5e7eb", "#9ca3af", "#1f2937", "#dc2626", "#2563eb", "#f59e0b", "#10b981", "#7c3aed", "#78350f", "#0f172a"];
 
-export function createSimulation(lot, graph, { fill = 0.55, arrivalsPerMinute = 6 } = {}) {
+/**
+ * seed:  Map(stallId -> { vehicle_id, color }) — the cars really parked right now
+ *        (from the camera). They stay put, so the plan matches the real lot,
+ *        and only new arrivals are animated. Without a seed the lot is filled at
+ *        random.
+ * rank:  (stall) -> cost. Guided arrivals take the cheapest free stall (the
+ *        same "best space" the guide recommends). Without it, drivers pick one
+ *        of the nearest few.
+ */
+export function createSimulation(lot, graph, { fill = 0.55, arrivalsPerMinute = 6, seed = null, rank = null } = {}) {
   const agents = [];
   const reserved = new Set();
   let issued = [];
@@ -23,11 +32,12 @@ export function createSimulation(lot, graph, { fill = 0.55, arrivalsPerMinute = 
     return id;
   };
 
-  function park(stall, dwell) {
+  function park(stall, dwell, real = null) {
     const agent = {
       key: `sim${key++}`,
-      vehicle_id: nextId(),
-      color: COLORS[Math.floor(Math.random() * COLORS.length)],
+      vehicle_id: real?.vehicle_id || nextId(),
+      color: real?.color || COLORS[Math.floor(Math.random() * COLORS.length)],
+      real: Boolean(real),
       phase: "parked",
       stall,
       pos: { ...stall.centroid },
@@ -43,13 +53,22 @@ export function createSimulation(lot, graph, { fill = 0.55, arrivalsPerMinute = 
     agents.push(agent);
   }
 
-  lot.stalls.forEach((stall) => {
-    if (Math.random() < fill) park(stall, 15 + Math.random() * 90);
-  });
+  if (seed) {
+    issued = [...seed.values()].map((v) => v.vehicle_id).filter(Boolean);
+    lot.stalls.forEach((stall) => {
+      const real = seed.get(stall.id);
+      if (real) park(stall, Infinity, real);
+    });
+  } else {
+    lot.stalls.forEach((stall) => {
+      if (Math.random() < fill) park(stall, 15 + Math.random() * 90);
+    });
+  }
 
   function pickStall() {
     const free = lot.stalls.filter((s) => !reserved.has(s.id));
     if (!free.length || !lot.entrance) return null;
+    if (rank) return free.reduce((best, s) => (rank(s) < rank(best) ? s : best));
     // Drivers mostly take one of the closest few free stalls.
     const ranked = free
       .map((s) => ({ s, d: dist(lot.entrance, s.centroid) + Math.random() * lot.width * 0.15 }))
@@ -68,6 +87,7 @@ export function createSimulation(lot, graph, { fill = 0.55, arrivalsPerMinute = 
       vehicle_id: nextId(),
       color: COLORS[Math.floor(Math.random() * COLORS.length)],
       phase: "arriving",
+      guided: Boolean(rank),
       stall,
       pos: { ...path[0] },
       heading: Math.atan2(path[1].y - path[0].y, path[1].x - path[0].x),
@@ -165,6 +185,8 @@ export function createSimulation(lot, graph, { fill = 0.55, arrivalsPerMinute = 
       speed: Math.round(a.speed * (lot.metersPerUnit || 1) * 10) / 10,
       spot_label: a.phase === "parked" ? a.stall.label : "",
       target_label: a.phase === "arriving" ? a.stall.label : "",
+      real: a.real,
+      route: a.phase === "arriving" ? [a.pos, ...a.path.slice(a.seg + 1)] : null,
       status: "confirmed",
       confidence: 1,
       trail: a.trail.slice(-25),
@@ -189,7 +211,7 @@ export function createSimulation(lot, graph, { fill = 0.55, arrivalsPerMinute = 
   }
 
   function removeCar(now = Date.now()) {
-    const parked = agents.filter((a) => a.phase === "parked");
+    const parked = agents.filter((a) => a.phase === "parked" && !a.real);
     if (!parked.length) return [];
     const events = [];
     leave(parked[Math.floor(Math.random() * parked.length)], events, now);

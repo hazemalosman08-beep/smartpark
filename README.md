@@ -5,8 +5,14 @@ A parking-lot camera app that runs entirely in the browser. No backend and no ac
 - **Camera tab:** use a webcam, your phone as a wireless camera, or a photo or video file. Cars are detected on
   the device with a YOLO11 model and tracked with stable IDs (`SP-001`, …). You draw the stall rows, driving
   lanes and entrance on the picture, and each stall shows as free or taken.
+- **Spaces are found automatically** when a picture loads. In a top-down (Overhead) picture the white stall lines
+  are read and split into spaces, and lines hidden under cars are filled in from the row's spacing. Parked cars
+  outside any found space count as spaces too. The camera view shows **spaces / open / taken** live. Use
+  **Find spaces automatically** to run it again, and **Erase** or **Stall row** to correct it.
 - **Lot tab:** a top-down plan of the lot exactly as you mapped it, with the live cars on it, the best free stall
-  and the route to it. With no camera running it shows a traffic simulation on the same plan.
+  and the route to it. **Photo** shows the real camera picture underneath, so the plan looks exactly like the lot.
+  **Map** shows a clean drawing with each car in its real colour. **Guide demo** starts from the real lot and
+  animates new cars being led along the aisles to the best free space.
 - **Find my car:** look up a car by its ID on the same device.
 - **Installable** as an app (PWA): "Install app" in Chrome/Edge/Android, or Share → Add to Home Screen on iPhone.
 

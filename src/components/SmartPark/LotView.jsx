@@ -43,7 +43,11 @@ function useSmoothed(tracks) {
   return shown.current;
 }
 
-export default function LotView({ lot, statuses, tracks = [], recommended = null, route = [], selected = null, onSelect, highlightStall = null }) {
+// backdrop: { href, x, y, w, h } — the real camera picture in plan coordinates.
+// photo:    show it, so the plan looks exactly like the lot; real cars are then
+//           visible in the picture and only get their ID tag and outline.
+export default function LotView({ lot, statuses, tracks = [], recommended = null, route = [], selected = null, onSelect, highlightStall = null, backdrop = null, photo = false }) {
+  const showPhoto = Boolean(photo && backdrop);
   const geometry = useMemo(() => {
     const widths = lot.stalls.map((s) => dist(s.poly[0], s.poly[1]));
     const depths = lot.stalls.map((s) => dist(s.front, s.back));
@@ -80,10 +84,14 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
 
       {/* ground */}
       <rect x={bounds.x} y={bounds.y} width={bounds.w} height={bounds.h} fill="#141a16" />
-      <rect x={0} y={0} width={lot.width} height={lot.height} fill="url(#asphalt)" rx={geometry.carW * 0.3} />
+      {showPhoto ? (
+        <image href={backdrop.href} x={backdrop.x} y={backdrop.y} width={backdrop.w} height={backdrop.h} preserveAspectRatio="none" opacity="0.95" />
+      ) : (
+        <rect x={0} y={0} width={lot.width} height={lot.height} fill="url(#asphalt)" rx={geometry.carW * 0.3} />
+      )}
 
       {/* lanes */}
-      {lot.lanes.map((lane) => {
+      {!showPhoto && lot.lanes.map((lane) => {
         const d = lane.points.map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`).join(" ");
         return (
           <g key={lane.id}>
@@ -107,20 +115,22 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
         const occupied = st?.status === "occupied";
         const isRec = recommended?.id === s.id;
         const isHi = highlightStall === s.label;
-        const fill = isRec ? "rgba(74,222,128,0.35)" : occupied ? "rgba(248,113,113,0.12)" : st ? "rgba(74,222,128,0.10)" : "rgba(255,255,255,0.03)";
+        const fill = showPhoto
+          ? isRec ? "rgba(74,222,128,0.55)" : occupied ? "rgba(239,68,68,0.28)" : st ? "rgba(74,222,128,0.3)" : "rgba(255,255,255,0.08)"
+          : isRec ? "rgba(74,222,128,0.35)" : occupied ? "rgba(248,113,113,0.12)" : st ? "rgba(74,222,128,0.10)" : "rgba(255,255,255,0.03)";
         const pts = s.poly.map((p) => `${p.x},${p.y}`).join(" ");
         const labelAt = { x: s.back.x + (s.front.x - s.back.x) * 0.18, y: s.back.y + (s.front.y - s.back.y) * 0.18 };
         return (
           <g key={s.id}>
             <title>{`${s.label} — ${occupied ? `occupied${st?.vehicle_id ? ` by ${st.vehicle_id}` : ""}` : st ? "free" : "unknown"}`}</title>
-            <polygon points={pts} fill={fill} stroke="none" />
+            <polygon points={pts} fill={fill} stroke={showPhoto ? (occupied ? "rgba(239,68,68,0.9)" : "rgba(74,222,128,0.9)") : "none"} strokeWidth={geometry.font * 0.08} />
             {/* painted lines: the two sides and the back, open towards the aisle */}
-            <polyline points={`${s.poly[0].x},${s.poly[0].y} ${s.poly[3].x},${s.poly[3].y} ${s.poly[2].x},${s.poly[2].y} ${s.poly[1].x},${s.poly[1].y}`} fill="none" stroke={isRec || isHi ? "#4ade80" : "rgba(255,255,255,0.8)"} strokeWidth={geometry.font * (isRec || isHi ? 0.22 : 0.1)} />
+            {!showPhoto && <polyline points={`${s.poly[0].x},${s.poly[0].y} ${s.poly[3].x},${s.poly[3].y} ${s.poly[2].x},${s.poly[2].y} ${s.poly[1].x},${s.poly[1].y}`} fill="none" stroke={isRec || isHi ? "#4ade80" : "rgba(255,255,255,0.8)"} strokeWidth={geometry.font * (isRec || isHi ? 0.22 : 0.1)} />}
             <text x={labelAt.x} y={labelAt.y} fontSize={geometry.font * 0.8} textAnchor="middle" dominantBaseline="middle" fill={occupied ? "rgba(255,255,255,0.35)" : isRec ? "#bbf7d0" : "rgba(255,255,255,0.7)"} fontFamily="ui-monospace, monospace" fontWeight="700">{s.label}</text>
             {!occupied && st && !isRec && (
               <circle cx={s.centroid.x} cy={s.centroid.y} r={geometry.font * 0.28} fill="rgba(74,222,128,0.75)" />
             )}
-            {occupied && !tracks.some((t) => t.spot_label === s.label) && (
+            {!showPhoto && occupied && !tracks.some((t) => t.spot_label === s.label) && (
               // Occupied, but no tracked vehicle to draw (e.g. a car parked before tracking started)
               <CarShape x={s.centroid.x} y={s.centroid.y} heading={s.heading} L={geometry.carL} W={geometry.carW} color="#6b7280" muted />
             )}
@@ -142,6 +152,11 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
       {lot.entrance && <Gate p={lot.entrance} text="IN" color="#4ade80" size={geometry.font} />}
       {lot.exit && <Gate p={lot.exit} text="OUT" color="#f472b6" size={geometry.font} />}
 
+      {/* where each guided car is being sent */}
+      {tracks.filter((t) => t.route?.length > 1).map((t) => (
+        <polyline key={`guide-${t.key}`} points={t.route.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={idColor(t.vehicle_id)} strokeOpacity="0.8" strokeWidth={geometry.font * 0.16} strokeDasharray={`${geometry.font * 0.5} ${geometry.font * 0.4}`} strokeLinecap="round" />
+      ))}
+
       {/* trails */}
       {tracks.filter((t) => t.motion !== "parked" && t.trail?.length > 2).map((t) => (
         <polyline key={`trail-${t.key}`} points={t.trail.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={t.color || idColor(t.vehicle_id)} strokeOpacity="0.35" strokeWidth={geometry.font * 0.18} strokeLinecap="round" />
@@ -152,13 +167,22 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
         const pos = smooth.get(t.key) || t.ground;
         if (!pos) return null;
         const stall = t.spot_label ? stallById.get(t.spot_label) : null;
-        const heading = t.motion === "parked" && stall ? stall.heading : pos.heading ?? t.heading ?? (stall ? stall.heading : -Math.PI / 2);
+        // Facing: the stall it is in, its direction of travel, or (seen from above)
+        // the long side of its box.
+        const boxHeading = t.w && t.h ? ((t.w * (lot.rectified ? 1 : lot.calibration.aspect || 1)) > t.h ? 0 : -Math.PI / 2) : -Math.PI / 2;
+        const heading = t.motion === "parked" && stall ? stall.heading : pos.heading ?? t.heading ?? (stall ? stall.heading : boxHeading);
+        // A real car is already visible in the photo: tag it instead of drawing over it.
+        const inPhoto = showPhoto && (t.real || !t.phase);
         const color = t.color || idColor(t.vehicle_id);
         const tag = idColor(t.vehicle_id); // always bright, readable on dark paint
         const isSel = selected === t.key;
         return (
           <g key={t.key} onClick={() => onSelect?.(isSel ? null : t.key)} style={{ cursor: "pointer" }} opacity={t.state === "lost" ? 0.45 : 1}>
-            <CarShape x={pos.x} y={pos.y} heading={heading} L={geometry.carL} W={geometry.carW} color={color} selected={isSel} />
+            {inPhoto ? (
+              <circle cx={pos.x} cy={pos.y} r={geometry.carW * 0.7} fill="none" stroke={tag} strokeWidth={geometry.font * (isSel ? 0.16 : 0.08)} />
+            ) : (
+              <CarShape x={pos.x} y={pos.y} heading={heading} L={geometry.carL} W={geometry.carW} color={color} selected={isSel} />
+            )}
             <g transform={`translate(${pos.x},${pos.y - geometry.carL * 0.55})`}>
               <rect x={-geometry.font * 1.35} y={-geometry.font * 0.38} width={geometry.font * 2.7} height={geometry.font * 0.76} rx={geometry.font * 0.2} fill="rgba(0,0,0,0.8)" stroke={tag} strokeWidth={geometry.font * 0.05} />
               <text fontSize={geometry.font * 0.5} textAnchor="middle" dominantBaseline="central" fill={tag} fontFamily="ui-monospace, monospace" fontWeight="700">{t.vehicle_id || "…"}</text>

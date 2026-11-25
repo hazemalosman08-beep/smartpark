@@ -59,13 +59,13 @@ export function SimulationCard({ running, onToggle, rate, onRate, onAdd, onRemov
   return (
     <section className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-[10px] font-semibold tracking-[0.2em] text-violet-300">TRAFFIC SIMULATION</h3>
+        <h3 className="text-[10px] font-semibold tracking-[0.2em] text-violet-300">GUIDE DEMO</h3>
         <button onClick={onToggle} className="flex items-center gap-1 rounded-full border border-violet-400/50 px-2.5 py-1 text-[11px] text-violet-200 hover:bg-violet-500/10">
           {running ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />} {running ? "Pause" : "Run"}
         </button>
       </div>
       <label className="mt-3 flex items-center gap-2 text-[11px] text-neutral-400">
-        Arrivals
+        New cars
         <input type="range" min={1} max={30} value={rate} onChange={(e) => onRate(Number(e.target.value))} className="flex-1 accent-violet-400" />
         <span className="w-14 text-right font-mono text-neutral-200">{rate}/min</span>
       </label>
