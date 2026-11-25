@@ -175,6 +175,77 @@ function segmentsAlong(points, maskW, maskH, angleDeg, { minLen, gap = 4, maxThi
 
 const mid = (s) => ({ x: (s.p.x + s.q.x) / 2, y: (s.p.y + s.q.y) / 2 });
 
+// Straight front and back edges for a row: where each divider starts and ends
+// (along its own direction) is fitted as a straight line across the row, robust
+// to dividers that look short because paint is hidden or worn.
+function straightenEnds(dividers, ux, uy) {
+  if (dividers.length < 3) return dividers;
+  const fit = (pick) => {
+    const pts = dividers.map((d) => ({ k: d.key, u: pick(d).x * ux + pick(d).y * uy }));
+    let line = { a: 0, b: 0 };
+    let use = pts;
+    for (let iter = 0; iter < 3; iter += 1) {
+      const n = use.length;
+      const mk = use.reduce((s, p) => s + p.k, 0) / n, mu = use.reduce((s, p) => s + p.u, 0) / n;
+      let sxx = 0, sxy = 0;
+      use.forEach((p) => { sxx += (p.k - mk) ** 2; sxy += (p.k - mk) * (p.u - mu); });
+      const b = sxx ? sxy / sxx : 0;
+      line = { a: mu - b * mk, b };
+      const res = pts.map((p) => Math.abs(p.u - (line.a + line.b * p.k)));
+      const tol = Math.max(3, median(res) * 2.5);
+      const next = pts.filter((_, i) => res[i] <= tol);
+      if (next.length < 2 || next.length === use.length) break;
+      use = next;
+    }
+    return line;
+  };
+  const fa = fit((d) => d.a), fb = fit((d) => d.b);
+  return dividers.map((d) => {
+    const ua = d.a.x * ux + d.a.y * uy, ub = d.b.x * ux + d.b.y * uy;
+    const ta = fa.a + fa.b * d.key, tb = fb.a + fb.b * d.key;
+    // Move each end along the divider's own line to the fitted edge.
+    const a = { x: d.a.x + ux * (ta - ua), y: d.a.y + uy * (ta - ua) };
+    const b = { x: d.b.x + ux * (tb - ub), y: d.b.y + uy * (tb - ub) };
+    return { ...d, a, b, len: Math.hypot(b.x - a.x, b.y - a.y) };
+  });
+}
+
+function crossing(a, b) {
+  const d1x = a.q.x - a.p.x, d1y = a.q.y - a.p.y, d2x = b.q.x - b.p.x, d2y = b.q.y - b.p.y;
+  const den = d1x * d2y - d1y * d2x;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((b.p.x - a.p.x) * d2y - (b.p.y - a.p.y) * d2x) / den;
+  const u = ((b.p.x - a.p.x) * d1y - (b.p.y - a.p.y) * d1x) / den;
+  return { t, u };
+}
+
+function splitAtCrossings(segs) {
+  const out = [];
+  for (const s of segs) {
+    const cuts = [];
+    for (const o of segs) {
+      if (o === s || o.len < s.len * 1.5) continue; // only long "row" lines cut
+      let dAng = Math.abs(((s.angle - o.angle) % 180 + 180) % 180);
+      dAng = Math.min(dAng, 180 - dAng);
+      if (dAng < 35) continue;
+      const c = crossing(s, o);
+      // The long line must really pass through this divider's middle part.
+      const margin = 4 / s.len;
+      if (c && c.t > 0.2 && c.t < 0.8 && c.u > -margin && c.u < 1 + margin) cuts.push(c.t);
+    }
+    if (!cuts.length) { out.push(s); continue; }
+    const ts = [0, ...cuts.sort((x, y) => x - y), 1];
+    for (let i = 0; i < ts.length - 1; i += 1) {
+      const a = ts[i], b = ts[i + 1];
+      if ((b - a) * s.len < 8) continue;
+      const p = { x: s.p.x + (s.q.x - s.p.x) * a, y: s.p.y + (s.q.y - s.p.y) * a };
+      const q = { x: s.p.x + (s.q.x - s.p.x) * b, y: s.p.y + (s.q.y - s.p.y) * b };
+      out.push({ ...s, p, q, len: (b - a) * s.len });
+    }
+  }
+  return out;
+}
+
 function mergeCollinear(list) {
   let segs = list.map((s) => ({ ...s }));
   for (let changed = true; changed;) {
@@ -249,6 +320,10 @@ export function findStalls(image, { vehicles = [] } = {}) {
   // Join pieces of the same painted line (breaks from wear, shadows, angle steps).
   segs = mergeCollinear(kept);
 
+  // A divider that runs straight through a double row (across the line between
+  // the two rows) belongs to two stalls: split it where a long line crosses it.
+  segs = splitAtCrossings(segs);
+
   // Segments whose middle sits inside a vehicle are reflections / car edges.
   const inCar = (p) => vehicles.some((v) => {
     const x = (p.x / W) * 100, y = (p.y / H) * 100;
@@ -273,8 +348,9 @@ export function findStalls(image, { vehicles = [] } = {}) {
     const along = Math.abs(dx * ux + dy * uy);
     const across = Math.abs(-dx * uy + dy * ux);
     const L = (a.len + b.len) / 2;
-    // Side by side (row direction may be slanted for angled parking).
-    if (along > L * 0.7 + across * 0.9) return null;
+    // Side by side: the start points line up. Angled (herringbone) rows shift a
+    // little per stall, but never by a whole stall depth (that is the next row).
+    if (along > L * 0.25 + across * 0.9) return null;
     if (across < L * 0.18 || across > L * maxFactor) return null;
     return { across, along };
   };
@@ -328,7 +404,22 @@ export function findStalls(image, { vehicles = [] } = {}) {
     const sorted = oriented
       .map((s, k) => ({ ...s, m: mids[k], key: mids[k].x * px + mids[k].y * py }))
       .sort((a, b) => a.key - b.key);
-    rows.push({ dividers: sorted, rx, ry, px, py, ux: ref.ux, uy: ref.uy });
+    // A chain of neighbours can zig-zag into the next row: cut it wherever the
+    // start points jump by more than one stall's worth of shift.
+    const runs = [[sorted[0]]];
+    for (let k = 1; k < sorted.length; k += 1) {
+      const prev = sorted[k - 1], cur = sorted[k];
+      const ua = (p) => p.x * ref.ux + p.y * ref.uy;
+      const shiftA = Math.abs(ua(cur.a) - ua(prev.a)), shiftB = Math.abs(ua(cur.b) - ua(prev.b));
+      const L = (prev.len + cur.len) / 2;
+      const allowed = 0.3 * L + 0.8 * (cur.key - prev.key);
+      if (Math.min(shiftA, shiftB) > allowed) runs.push([cur]);
+      else runs[runs.length - 1].push(cur);
+    }
+    for (const run of runs) {
+      if (run.length < 2) continue;
+      rows.push({ dividers: straightenEnds(run, ref.ux, ref.uy), rx, ry, px, py, ux: ref.ux, uy: ref.uy });
+    }
   }
 
   // Join rows that continue each other across a hidden divider (car on the line).
@@ -344,7 +435,7 @@ export function findStalls(image, { vehicles = [] } = {}) {
         const dx = first.m.x - last.m.x, dy = first.m.y - last.m.y;
         const across = dx * A.px + dy * A.py;
         const along = Math.abs(dx * A.ux + dy * A.uy);
-        if (across <= 0 || across > spacing * 4.5 || along > (last.len + first.len) * 0.35 + across * 0.9) continue;
+        if (across <= 0 || across > spacing * 4.5 || along > (last.len + first.len) * 0.1 + across * 0.75) continue;
         if (Math.abs(last.len / first.len - 1) > 0.6) continue;
         // Both ends of the next divider must continue the row's two end lines.
         if (A.dividers.length >= 2) {
@@ -396,7 +487,8 @@ export function findStalls(image, { vehicles = [] } = {}) {
         });
       }
     }
-    if (!cells.length) return;
+    // A single "stall" on its own is usually road markings or kerb lines.
+    if (cells.length < 2) return;
     // Which end is the aisle? The back end usually has a painted line or the next
     // row's stalls right behind it; the front opens onto empty asphalt.
     const beyond = (end) => {
@@ -507,4 +599,38 @@ export function imagePixels(source, maxSide = 720) {
   ctx.drawImage(source, 0, 0, w, h);
   const { data } = ctx.getImageData(0, 0, w, h);
   return { data, width: w, height: h };
+}
+
+// ---------------------------------------------------------------------------
+// Does each stall look like empty pavement? A parked car changes the stall's
+// brightness and adds texture (windows, roof edges, shadows), even when the
+// object detector does not recognise it from above.
+// Returns Map(stallId -> score); about 1 means "looks occupied".
+export function stallAppearance({ data, width: W, height: H }, stalls) {
+  const gray = (x, y) => {
+    const xi = Math.max(0, Math.min(W - 1, Math.round(x))), yi = Math.max(0, Math.min(H - 1, Math.round(y)));
+    const i = (yi * W + xi) * 4;
+    return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  };
+  const feats = stalls.map((s) => {
+    const [p0, p1, p2, p3] = s.poly.map((p) => ({ x: (p.x / 100) * W, y: (p.y / 100) * H }));
+    const vals = [];
+    // Inner 20%..80% of the stall, away from the painted lines.
+    for (let i = 0; i < 9; i += 1) for (let j = 0; j < 9; j += 1) {
+      const u = 0.2 + (0.6 * i) / 8, v = 0.2 + (0.6 * j) / 8;
+      const top = { x: p0.x + (p1.x - p0.x) * u, y: p0.y + (p1.y - p0.y) * u };
+      const bot = { x: p3.x + (p2.x - p3.x) * u, y: p3.y + (p2.y - p3.y) * u };
+      vals.push(gray(top.x + (bot.x - top.x) * v, top.y + (bot.y - top.y) * v));
+    }
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length);
+    return { id: s.id, mean, sd };
+  });
+  if (feats.length < 4) return new Map();
+  // The typical empty stall: the quieter half of all stalls.
+  const bySd = [...feats].sort((a, b) => a.sd - b.sd).slice(0, Math.max(2, Math.ceil(feats.length / 2)));
+  const m0 = median(bySd.map((f) => f.mean));
+  const s0 = median(bySd.map((f) => f.sd));
+  const spread = Math.max(6, median(bySd.map((f) => Math.abs(f.mean - m0))) * 2.5);
+  return new Map(feats.map((f) => [f.id, Math.max(Math.abs(f.mean - m0) / (spread * 2.2), (f.sd - s0) / Math.max(10, s0 * 2.2))]));
 }

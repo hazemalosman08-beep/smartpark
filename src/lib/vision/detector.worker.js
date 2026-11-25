@@ -16,6 +16,12 @@ ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, self.navigator?
 ort.env.logLevel = "error";
 
 const VEHICLE_CLASSES = new Map([[2, "car"], [3, "motorcycle"], [5, "bus"], [7, "truck"]]);
+// Seen straight from above, cars look like small dark rectangles, and a general
+// model (trained mostly on side views) calls them "cell phone", "remote",
+// "suitcase", "book", "laptop" or "train". These are kept as look-alikes and
+// accepted on the main thread only when they form a consistent group of
+// car-sized objects (see vehicleDetector.js).
+const LOOKALIKE_CLASSES = new Set([6, 28, 63, 65, 67, 73]);
 const SIZE = 640;
 let session = null;
 let backend = "";
@@ -100,7 +106,7 @@ function nms(boxes, threshold) {
   return kept;
 }
 
-async function inferCrop(bitmap, crop, frame, minScore) {
+async function inferCrop(bitmap, crop, frame, minScore, lookalikes = true) {
   const { input, scale, padX, padY } = preprocess(bitmap, crop);
   const feeds = { [session.inputNames[0]]: new ort.Tensor("float32", input, [1, 3, SIZE, SIZE]) };
   const output = (await session.run(feeds))[session.outputNames[0]];
@@ -112,14 +118,22 @@ async function inferCrop(bitmap, crop, frame, minScore) {
     let bestClass = -1;
     let vehicle = 0;
     let vehicleClass = -1;
+    let alike = 0;
     for (let c = 4; c < channels; c += 1) {
       const score = values[c * anchors + i];
       if (score > best) { best = score; bestClass = c - 4; }
       if (VEHICLE_CLASSES.has(c - 4) && score > vehicle) { vehicle = score; vehicleClass = c - 4; }
+      if (LOOKALIKE_CLASSES.has(c - 4) && score > alike) alike = score;
+    }
+    let lookalike = false;
+    if (lookalikes && LOOKALIKE_CLASSES.has(bestClass) && alike * 0.9 > vehicle) {
+      vehicle = alike * 0.9;
+      vehicleClass = 2;
+      lookalike = true;
     }
     if (vehicle < minScore) continue;
     // A box the model is far surer is a person/sign is not a vehicle.
-    if (!VEHICLE_CLASSES.has(bestClass) && best > vehicle * 2.5) continue;
+    if (!lookalike && !VEHICLE_CLASSES.has(bestClass) && best > vehicle * 2.5) continue;
     const cx = (values[i] - padX) / scale;
     const cy = (values[anchors + i] - padY) / scale;
     const w = values[2 * anchors + i] / scale;
@@ -137,7 +151,7 @@ async function inferCrop(bitmap, crop, frame, minScore) {
         (crop.x + crop.w - x2 < edge && crop.x + crop.w < frame.width) ||
         (y1 - crop.y < edge && crop.y > 0) ||
         (crop.y + crop.h - y2 < edge && crop.y + crop.h < frame.height));
-    boxes.push({ x1, y1, x2, y2, score: vehicle, label: VEHICLE_CLASSES.get(vehicleClass), cut, tile: Boolean(crop.tile) });
+    boxes.push({ x1, y1, x2, y2, score: vehicle, label: VEHICLE_CLASSES.get(vehicleClass), lookalike, cut, tile: Boolean(crop.tile) });
   }
   return nms(boxes, 0.5);
 }
@@ -165,6 +179,7 @@ function fuse(all) {
       const wa = twin.score, wb = box.score;
       for (const k of ["x1", "y1", "x2", "y2"]) twin[k] = (twin[k] * wa + box[k] * wb) / (wa + wb);
       twin.score = Math.min(0.99, Math.max(wa, wb) + 0.05);
+      twin.lookalike = twin.lookalike && box.lookalike;
       twin.votes += 1;
       continue;
     }
@@ -210,6 +225,7 @@ self.onmessage = async (event) => {
         h: ((b.y2 - b.y1) / frame.height) * 100,
         score: Math.round(b.score * 1000) / 1000,
         label: b.label,
+        lookalike: Boolean(b.lookalike),
       }));
       self.postMessage({ type: "result", id: msg.id, boxes, ms: performance.now() - started, backend, tiled: useTiles, width: frame.width, height: frame.height });
     }

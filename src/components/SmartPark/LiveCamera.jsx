@@ -11,7 +11,7 @@ import {
 } from "@/lib/vision/lot";
 import { drawOverlay } from "@/lib/vision/overlay";
 import { autoMapLot } from "@/lib/vision/autoMap";
-import { imagePixels } from "@/lib/vision/stallFinder";
+import { imagePixels, stallAppearance } from "@/lib/vision/stallFinder";
 import { pointInPolygon, projectOnSegment } from "@/lib/vision/geometry";
 
 const TOOLS = {
@@ -82,6 +82,8 @@ export default function LiveCamera({
   const sourceKeyRef = useRef("");
   const sourceStartRef = useRef(0);
   const findSpacesRef = useRef(null);
+  const appearanceRef = useRef(null);
+  const appearanceAt = useRef(0);
   const liveRef = useRef({ tracks: [], pending: [], statuses: new Map(), lastBoxes: [] });
   const cursorRef = useRef(null);
   const calRef = useRef(calibration);
@@ -319,7 +321,15 @@ export default function LiveCamera({
     });
     // Hidden parked cars still occupy their stall; lost moving ones do not.
     const present = tracks.filter((t) => t.state !== "lost" || t.motion === "parked");
-    const statuses = occupancyRef.current.update(cal.stalls, present, { view, now, still: isStill });
+    // Seen from above, also check whether each stall looks like empty pavement
+    // (about once a second; every time for a photo).
+    if (el && view === "overhead" && cal.stalls.length >= 4 && (isStill || now - appearanceAt.current > 1000)) {
+      appearanceAt.current = now;
+      try { appearanceRef.current = stallAppearance(imagePixels(el, 640), cal.stalls); } catch { appearanceRef.current = null; }
+    }
+    const statuses = occupancyRef.current.update(cal.stalls, present, {
+      view, now, still: isStill, appearance: view === "overhead" ? appearanceRef.current : null,
+    });
     liveRef.current = { tracks, pending: trackerRef.current.pending(), statuses, lastBoxes: result.boxes };
     const occupied = [...statuses.values()].filter((s) => s.status === "occupied").length;
     setCounts({ vehicles: tracks.filter((t) => t.state !== "lost").length, occupied, free: statuses.size - occupied });
@@ -352,14 +362,14 @@ export default function LiveCamera({
         const el = mediaRef.current();
         if (!mediaReady(el)) { await sleep(150); continue; }
         const isStill = source === "image" || frozen;
-        const key = isStill ? `${source}:${frozen}:${fileUrl}` : "";
+        const key = isStill ? `${source}:${frozen}:${fileUrl}:${calRef.current.view}` : "";
         if (isStill && key === lastStillKey) { await sleep(250); continue; }
         cycle += 1;
         // Small-vehicle boost (tiled pass): always on photos; on video every frame
         // with a GPU, otherwise every 4th frame so tracking stays responsive.
         const tiles = tiling === "on" || isStill || (tiling === "auto" && (detector.backend === "webgpu" || cycle % 4 === 0));
         try {
-          const result = await detectVehiclesLocal(el, { tiles: tiling === "off" && !isStill ? false : tiles });
+          const result = await detectVehiclesLocal(el, { tiles: tiling === "off" && !isStill ? false : tiles, overhead: calRef.current.view === "overhead" });
           if (cancelled) break;
           cycleRef.current = cycle;
           process(result, isStill, el);
@@ -393,7 +403,13 @@ export default function LiveCamera({
     const view = calibration.view || "angled";
     occupancyRef.current.reset();
     const present = tracks.filter((t) => t.state !== "lost" || t.motion === "parked");
-    const statuses = occupancyRef.current.update(calibration.stalls, present, { view, still: true });
+    let appearance = null;
+    const el = mediaRef.current();
+    if (view === "overhead" && calibration.stalls.length >= 4 && mediaReady(el)) {
+      try { appearance = stallAppearance(imagePixels(el, 640), calibration.stalls); } catch { appearance = null; }
+    }
+    appearanceRef.current = appearance;
+    const statuses = occupancyRef.current.update(calibration.stalls, present, { view, still: true, appearance });
     liveRef.current = { ...liveRef.current, statuses };
     const occupied = [...statuses.values()].filter((s) => s.status === "occupied").length;
     setCounts((c) => ({ ...c, occupied, free: statuses.size - occupied }));

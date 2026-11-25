@@ -57,3 +57,21 @@ assert.equal(autoMapLot({ image: syntheticLot(), vehicles: [], view: "angled" })
 assert.equal(guessView([{ x: 1, y: 5, w: 5, h: 5 }, { x: 1, y: 20, w: 5, h: 5 }, { x: 1, y: 60, w: 5, h: 5 }, { x: 1, y: 80, w: 5, h: 5 }]), "overhead");
 assert.equal(guessView([{ x: 1, y: 5, w: 1, h: 1 }, { x: 1, y: 20, w: 1.5, h: 1.5 }, { x: 1, y: 60, w: 6, h: 6 }, { x: 1, y: 80, w: 8, h: 8 }]), "angled");
 console.log("stall finder ok", straight.stalls.length, angled.stalls.length, gap.stalls.length);
+
+// Appearance: a dark car-sized patch in one stall stands out from empty pavement.
+{
+  const { stallAppearance } = await import("../../src/lib/vision/stallFinder.js");
+  const lot = syntheticLot({ rowsY: [120] });
+  const stalls = findStalls(lot).stalls;
+  const target = stalls[3];
+  const xs = target.poly.map((p) => (p.x / 100) * 640), ys = target.poly.map((p) => (p.y / 100) * 480);
+  for (let y = Math.min(...ys) + 12; y < Math.max(...ys) - 12; y += 1) for (let x = Math.min(...xs) + 12; x < Math.max(...xs) - 12; x += 1) {
+    const i = (Math.round(y) * 640 + Math.round(x)) * 4;
+    const v = (x + y) % 9 < 4 ? 30 : 70; // dark body with window texture
+    lot.data[i] = v; lot.data[i + 1] = v; lot.data[i + 2] = v;
+  }
+  const sc = stallAppearance(lot, stalls);
+  assert.ok(sc.get(target.id) >= 1.35, `occupied stall scores ${sc.get(target.id)}`);
+  for (const s of stalls) if (s !== target) assert.ok(sc.get(s.id) < 1.35, `empty stall ${s.label} scores ${sc.get(s.id)}`);
+  console.log("appearance ok", sc.get(target.id).toFixed(2));
+}

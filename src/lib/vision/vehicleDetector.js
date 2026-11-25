@@ -82,7 +82,23 @@ export function setDetectorModel(model) {
  * Detect vehicles in a video, image or canvas.
  * Returns { boxes: [{x,y,w,h,score,label}] in % of the frame, ms, backend, tiled }.
  */
-export async function detectVehiclesLocal(source, { tiles = true, minScore = 0.1 } = {}) {
+// Top-down look-alikes ("cell phone" etc.) are kept only when they are part of
+// a consistent group of car-sized objects, or the camera is set to overhead.
+// Then any box far from the typical car size (a whole row read as one "bus")
+// is dropped.
+export function filterLookalikes(boxes, { overhead = false } = {}) {
+  const alike = boxes.filter((b) => b.lookalike && b.score >= 0.2);
+  const useAlike = overhead || alike.length >= 3;
+  let kept = boxes.filter((b) => !b.lookalike || (useAlike && b.score >= 0.12));
+  if (useAlike && kept.length >= 5) {
+    const areas = kept.filter((b) => b.score >= 0.25).map((b) => b.w * b.h).sort((a, b) => a - b);
+    const median = areas[Math.floor(areas.length / 2)] || 0;
+    if (median > 0) kept = kept.filter((b) => b.w * b.h <= median * 3.5 && b.w * b.h >= median * 0.2);
+  }
+  return kept;
+}
+
+export async function detectVehiclesLocal(source, { tiles = true, minScore = 0.1, overhead = false } = {}) {
   const width = source.videoWidth || source.naturalWidth || source.width;
   const height = source.videoHeight || source.naturalHeight || source.height;
   if (!width || !height) return { boxes: [], ms: 0, backend: status.backend, tiled: false };
@@ -90,7 +106,7 @@ export async function detectVehiclesLocal(source, { tiles = true, minScore = 0.1
   const id = nextId++;
   if (status.state === "idle") setStatus({ state: "loading" });
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    pending.set(id, { resolve: (msg) => resolve({ ...msg, boxes: filterLookalikes(msg.boxes, { overhead }) }), reject });
     ensureWorker().postMessage({ type: "detect", id, bitmap, tiles, minScore, modelUrl: modelUrl() }, [bitmap]);
   });
 }

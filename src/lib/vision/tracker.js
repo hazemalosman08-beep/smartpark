@@ -132,8 +132,11 @@ export function createTracker(options = {}) {
     }
 
     const dets = detections.filter((d) => d.w > 0 && d.h > 0 && (d.score ?? 1) >= cfg.lowScore);
-    const high = dets.filter((d) => (d.score ?? 1) >= cfg.highScore);
-    const low = dets.filter((d) => (d.score ?? 1) < cfg.highScore);
+    // A single photo has no second frame to confirm a weak detection, so the
+    // bar for a new vehicle is lower there.
+    const highScore = still ? 0.25 : cfg.highScore;
+    const high = dets.filter((d) => (d.score ?? 1) >= highScore);
+    const low = dets.filter((d) => (d.score ?? 1) < highScore);
     const active = tracks.filter((t) => t.state !== "tentative");
     const tentative = tracks.filter((t) => t.state === "tentative");
 

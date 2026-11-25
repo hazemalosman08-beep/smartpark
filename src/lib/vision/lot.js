@@ -258,7 +258,12 @@ export function createOccupancy({ timeConstantMs = 1800, onAt = 0.62, offAt = 0.
    * stalls: camera-space stalls; vehicles: [{x,y,w,h,vehicle_id?,motion?}] in camera %.
    * still: a single photo (decide immediately).
    */
-  function update(stalls, vehicles, { view = "angled", now = Date.now(), still = false } = {}) {
+  /**
+   * appearance: optional Map(stallId -> score) from stallAppearance(); a stall
+   * that clearly does not look like empty pavement counts as occupied even when
+   * no vehicle was detected in it (dark cars seen from above are easy to miss).
+   */
+  function update(stalls, vehicles, { view = "angled", now = Date.now(), still = false, appearance = null } = {}) {
     const dt = lastNow ? Math.max(0, now - lastNow) : timeConstantMs;
     lastNow = now;
     const alpha = still ? 1 : 1 - Math.exp(-dt / timeConstantMs);
@@ -267,7 +272,9 @@ export function createOccupancy({ timeConstantMs = 1800, onAt = 0.62, offAt = 0.
     for (const stall of stalls) {
       const hit = assigned.get(stall.id);
       // A car merely driving past a stall is weaker evidence than one standing in it.
-      const target = hit ? (hit.vehicle.motion === "moving" ? 0.45 : 1) * Math.min(1, 0.4 + hit.score) : 0;
+      let target = hit ? (hit.vehicle.motion === "moving" ? 0.45 : 1) * Math.min(1, 0.4 + hit.score) : 0;
+      const looks = appearance?.get(stall.id);
+      if (looks !== undefined && looks >= 1.35) target = Math.max(target, 0.85);
       const prev = state.get(stall.id) || { evidence: still ? target : 0, occupied: false, since: now };
       const evidence = prev.evidence + (target - prev.evidence) * alpha;
       let occupied = prev.occupied;
