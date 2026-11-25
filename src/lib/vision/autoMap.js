@@ -34,7 +34,7 @@ export function autoMapLot({ image, vehicles = [], view = "overhead", keepStalls
   const painted = stalls.length - keepStalls.length;
   // Cars standing where no painted stall was found (lines hidden under cars).
   const fromCars = stallsFromVehicles(vehicles, view, stalls, { auto: true });
-  stalls = dedupeStalls([...stalls, ...fromCars]);
+  stalls = dropOddShapes(dedupeStalls([...stalls, ...fromCars]));
 
   const lanes = [...keepLanes, ...found.aisles.map((a) => ({ ...a, auto: true }))];
   // Entrance guess: the aisle end nearest the bottom of the picture.
@@ -45,4 +45,23 @@ export function autoMapLot({ image, vehicles = [], view = "overhead", keepStalls
     autoEntrance = { x: best.x, y: Math.min(99, best.y), auto: true };
   }
   return { stalls, lanes, entrance: autoEntrance, stats: { painted: stalls.filter((x) => x.auto && !x.learned).length, fromCars: stalls.filter((x) => x.learned).length, rows: found.debug.rows } };
+}
+
+// A "space" far smaller or thinner than the lot's normal spaces is a piece of
+// kerb or marking, not a parking space. Hand-drawn spaces are always kept.
+function dropOddShapes(stalls) {
+  const len = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const dims = stalls.map((s) => {
+    const w = (len(s.poly[0], s.poly[1]) + len(s.poly[3], s.poly[2])) / 2;
+    const d = (len(s.poly[0], s.poly[3]) + len(s.poly[1], s.poly[2])) / 2;
+    return { short: Math.min(w, d), long: Math.max(w, d) };
+  });
+  // Painted spaces are compared with each other; spaces inferred from a parked
+  // car are car-sized by nature and kept.
+  const painted = (s) => s.auto && !s.learned;
+  const auto = dims.filter((_, i) => painted(stalls[i]));
+  if (auto.length < 5) return stalls;
+  const med = (arr) => { const v = [...arr].sort((a, b) => a - b); return v[Math.floor(v.length / 2)]; };
+  const mShort = med(auto.map((d) => d.short)), mLong = med(auto.map((d) => d.long));
+  return stalls.filter((s, i) => !painted(s) || (dims[i].short >= mShort * 0.55 && dims[i].long >= mLong * 0.55));
 }

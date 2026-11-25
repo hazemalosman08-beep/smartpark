@@ -23,6 +23,6 @@ Results (row-based space finder):
 | Picture | Spaces found | Extra | Open/taken right |
 |---|---|---|---|
 | garage | 51/51 | 0 | 51/51 |
-| drone | 80/81 | 7 (mostly real spaces cut by the picture edge) | 79/80 |
+| drone | 80/81 | 5 (real spaces cut by the picture edge) | 80/80 |
 
 Before it: garage 47/51 and 46/47; drone 63/81 with 13 extra and 58/63.

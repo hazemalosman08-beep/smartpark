@@ -285,7 +285,9 @@ export function createOccupancy({ timeConstantMs = 1800, onAt = 0.62, offAt = 0.
       // A car merely driving past a stall is weaker evidence than one standing in it.
       let target = hit ? (hit.vehicle.motion === "moving" ? 0.45 : 1) * Math.min(1, 0.4 + hit.score) : 0;
       const looks = appearance?.get(stall.id);
-      if (looks !== undefined && looks >= 1.35) target = Math.max(target, 0.85);
+      // A space that clearly does not look like empty pavement counts as taken
+      // even without a detected car (cars under trees, very dark cars).
+      if (looks !== undefined && looks >= 1.4 && !hit) target = Math.max(target, 0.85);
       const prev = state.get(stall.id) || { evidence: still ? target : 0, occupied: false, since: now };
       const evidence = prev.evidence + (target - prev.evidence) * alpha;
       let occupied = prev.occupied;

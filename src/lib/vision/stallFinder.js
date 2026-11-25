@@ -964,12 +964,19 @@ export function findStallsCombined(image, opts = {}) {
     return ((Math.atan2(d.y - a.y, d.x - a.x) * 180) / Math.PI + 180) % 180;
   };
   const rowDirs = rows.debug.directions || [];
-  for (const s of pairs.stalls) {
-    if (kept.some((k) => clash(s, k))) continue;
+  const candidates = pairs.stalls.filter((s) => {
+    if (kept.some((k) => clash(s, k))) return false;
     // Where regular rows were found, the line-pair finder only adds spaces of a
     // different orientation (an angled section); in the same orientation it
     // mostly picks up kerbs and cut-off rows the row finder rightly rejected.
-    if (rows.stalls.length && rowDirs.some((d) => angleDiff(sideAngle(s), d) < 15)) continue;
+    return !(rows.stalls.length && rowDirs.some((d) => angleDiff(sideAngle(s), d) < 15));
+  });
+  // A real angled section is a row of spaces; a lone odd-angled "space" next to
+  // regular rows is a piece of kerb.
+  const perRow = new Map();
+  candidates.forEach((c) => perRow.set(c.row, (perRow.get(c.row) || 0) + 1));
+  for (const s of candidates) {
+    if (rows.stalls.length && (perRow.get(s.row) || 0) < 3) continue;
     if (!rename.has(s.row)) rename.set(s.row, letter(next++));
     const row = rename.get(s.row);
     kept.push({ ...s, row, label: `${row}${s.index}`, id: `${row}${s.index}-${Math.random().toString(36).slice(2, 7)}` });
