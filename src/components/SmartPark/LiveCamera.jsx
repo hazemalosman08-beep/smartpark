@@ -369,7 +369,14 @@ export default function LiveCamera({
         // with a GPU, otherwise every 4th frame so tracking stays responsive.
         const tiles = tiling === "on" || isStill || (tiling === "auto" && (detector.backend === "webgpu" || cycle % 4 === 0));
         try {
-          const result = await detectVehiclesLocal(el, { tiles: tiling === "off" && !isStill ? false : tiles, overhead: calRef.current.view === "overhead" });
+          // High-resolution pass: always on photos; on video with the small-car
+          // boost (every frame on a GPU, every 4th frame otherwise).
+          const boost = tiling !== "off" && tiles;
+          const result = await detectVehiclesLocal(el, {
+            tiles: isStill || (boost && detector.backend === "webgpu"),
+            hires: isStill || boost,
+            overhead: calRef.current.view === "overhead",
+          });
           if (cancelled) break;
           cycleRef.current = cycle;
           process(result, isStill, el);

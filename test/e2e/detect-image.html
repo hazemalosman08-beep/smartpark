@@ -1,0 +1,11 @@
+<!doctype html><html><body><img id="img"><script type="module">
+// Runs the app's detector on ?img=… and exposes the boxes (for accuracy checks).
+import { detectVehiclesLocal, setDetectorModel } from "/src/lib/vision/vehicleDetector.js";
+const q = new URLSearchParams(location.search);
+if (q.get("model")) setDetectorModel(q.get("model"));
+const img = document.getElementById("img"); img.src = q.get("img"); await img.decode();
+try {
+  const r = await detectVehiclesLocal(img, { tiles: q.get("tiles") !== "0", hires: q.get("hires") === "1", overhead: q.get("overhead") === "1" });
+  window.__result = { boxes: r.boxes, ms: r.ms, backend: r.backend, w: img.naturalWidth, h: img.naturalHeight };
+} catch (e) { window.__result = { error: String(e) }; }
+</script></body></html>

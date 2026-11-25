@@ -98,7 +98,7 @@ export function filterLookalikes(boxes, { overhead = false } = {}) {
   return kept;
 }
 
-export async function detectVehiclesLocal(source, { tiles = true, minScore = 0.1, overhead = false } = {}) {
+export async function detectVehiclesLocal(source, { tiles = true, hires = false, minScore = 0.12, overhead = false } = {}) {
   const width = source.videoWidth || source.naturalWidth || source.width;
   const height = source.videoHeight || source.naturalHeight || source.height;
   if (!width || !height) return { boxes: [], ms: 0, backend: status.backend, tiled: false };
@@ -107,6 +107,6 @@ export async function detectVehiclesLocal(source, { tiles = true, minScore = 0.1
   if (status.state === "idle") setStatus({ state: "loading" });
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve: (msg) => resolve({ ...msg, boxes: filterLookalikes(msg.boxes, { overhead }) }), reject });
-    ensureWorker().postMessage({ type: "detect", id, bitmap, tiles, minScore, modelUrl: modelUrl() }, [bitmap]);
+    ensureWorker().postMessage({ type: "detect", id, bitmap, tiles, hires, minScore, modelUrl: modelUrl() }, [bitmap]);
   });
 }
