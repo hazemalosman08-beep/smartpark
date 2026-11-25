@@ -1,11 +1,12 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { Camera, Map, Navigation } from "lucide-react";
+import { Camera, Map, MonitorSmartphone, Navigation } from "lucide-react";
 import InstallButton from "@/components/SmartPark/InstallButton";
 
 const TABS = [
   { key: "camera", label: "Camera", icon: Camera, hint: "Detect & map" },
   { key: "lot", label: "Lot", icon: Map, hint: "Live plan" },
+  { key: "driver", label: "Driver", icon: MonitorSmartphone, hint: "Guide screen" },
 ];
 
 export default function TopBar({ tab, setTab, status }) {

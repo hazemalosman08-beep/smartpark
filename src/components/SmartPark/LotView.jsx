@@ -46,7 +46,7 @@ function useSmoothed(tracks) {
 // backdrop: { href, x, y, w, h } — the real camera picture in plan coordinates.
 // photo:    show it, so the plan looks exactly like the lot; real cars are then
 //           visible in the picture and only get their ID tag and outline.
-export default function LotView({ lot, statuses, tracks = [], recommended = null, route = [], selected = null, onSelect, highlightStall = null, backdrop = null, photo = false }) {
+export default function LotView({ lot, statuses, tracks = [], recommended = null, route = [], selected = null, onSelect, highlightStall = null, backdrop = null, photo = false, guide = null, showCars = true, showTags = true, quiet = false }) {
   const showPhoto = Boolean(photo && backdrop);
   const geometry = useMemo(() => {
     const widths = lot.stalls.map((s) => dist(s.poly[0], s.poly[1]));
@@ -126,8 +126,8 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
             <polygon points={pts} fill={fill} stroke={showPhoto ? (occupied ? "rgba(239,68,68,0.9)" : "rgba(74,222,128,0.9)") : "none"} strokeWidth={geometry.font * 0.08} />
             {/* painted lines: the two sides and the back, open towards the aisle */}
             {!showPhoto && <polyline points={`${s.poly[0].x},${s.poly[0].y} ${s.poly[3].x},${s.poly[3].y} ${s.poly[2].x},${s.poly[2].y} ${s.poly[1].x},${s.poly[1].y}`} fill="none" stroke={isRec || isHi ? "#4ade80" : "rgba(255,255,255,0.8)"} strokeWidth={geometry.font * (isRec || isHi ? 0.22 : 0.1)} />}
-            <text x={labelAt.x} y={labelAt.y} fontSize={geometry.font * 0.8} textAnchor="middle" dominantBaseline="middle" fill={occupied ? "rgba(255,255,255,0.35)" : isRec ? "#bbf7d0" : "rgba(255,255,255,0.7)"} fontFamily="ui-monospace, monospace" fontWeight="700">{s.label}</text>
-            {!occupied && st && !isRec && (
+            {!quiet && <text x={labelAt.x} y={labelAt.y} fontSize={geometry.font * 0.8} textAnchor="middle" dominantBaseline="middle" fill={occupied ? "rgba(255,255,255,0.35)" : isRec ? "#bbf7d0" : "rgba(255,255,255,0.7)"} fontFamily="ui-monospace, monospace" fontWeight="700">{s.label}</text>}
+            {!quiet && !occupied && st && !isRec && (
               <circle cx={s.centroid.x} cy={s.centroid.y} r={geometry.font * 0.28} fill="rgba(74,222,128,0.75)" />
             )}
             {!showPhoto && occupied && !tracks.some((t) => t.spot_label === s.label) && (
@@ -152,6 +152,9 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
       {lot.entrance && <Gate p={lot.entrance} text="IN" color="#4ade80" size={geometry.font} />}
       {lot.exit && <Gate p={lot.exit} text="OUT" color="#f472b6" size={geometry.font} />}
 
+      {/* driver guidance: glowing route, pulsing space, a car showing the way */}
+      {guide && <GuideLayer guide={guide} geometry={geometry} />}
+
       {/* where each guided car is being sent */}
       {tracks.filter((t) => t.route?.length > 1).map((t) => (
         <polyline key={`guide-${t.key}`} points={t.route.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={idColor(t.vehicle_id)} strokeOpacity="0.8" strokeWidth={geometry.font * 0.16} strokeDasharray={`${geometry.font * 0.5} ${geometry.font * 0.4}`} strokeLinecap="round" />
@@ -163,7 +166,7 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
       ))}
 
       {/* vehicles */}
-      {tracks.map((t) => {
+      {showCars && tracks.map((t) => {
         const pos = smooth.get(t.key) || t.ground;
         if (!pos) return null;
         const stall = t.spot_label ? stallById.get(t.spot_label) : null;
@@ -178,19 +181,66 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
         const isSel = selected === t.key;
         return (
           <g key={t.key} onClick={() => onSelect?.(isSel ? null : t.key)} style={{ cursor: "pointer" }} opacity={t.state === "lost" ? 0.45 : 1}>
-            {inPhoto ? (
-              <circle cx={pos.x} cy={pos.y} r={geometry.carW * 0.7} fill="none" stroke={tag} strokeWidth={geometry.font * (isSel ? 0.16 : 0.08)} />
+            {inPhoto ? (showTags && <circle cx={pos.x} cy={pos.y} r={geometry.carW * 0.7} fill="none" stroke={tag} strokeWidth={geometry.font * (isSel ? 0.16 : 0.08)} />
             ) : (
               <CarShape x={pos.x} y={pos.y} heading={heading} L={geometry.carL} W={geometry.carW} color={color} selected={isSel} />
             )}
-            <g transform={`translate(${pos.x},${pos.y - geometry.carL * 0.55})`}>
+            {showTags && <g transform={`translate(${pos.x},${pos.y - geometry.carL * 0.55})`}>
               <rect x={-geometry.font * 1.35} y={-geometry.font * 0.38} width={geometry.font * 2.7} height={geometry.font * 0.76} rx={geometry.font * 0.2} fill="rgba(0,0,0,0.8)" stroke={tag} strokeWidth={geometry.font * 0.05} />
               <text fontSize={geometry.font * 0.5} textAnchor="middle" dominantBaseline="central" fill={tag} fontFamily="ui-monospace, monospace" fontWeight="700">{t.vehicle_id || "…"}</text>
-            </g>
+            </g>}
           </g>
         );
       })}
     </svg>
+  );
+}
+
+// Point at distance d along a polyline, with its direction.
+function along(points, d) {
+  let left = d;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1], b = points[i];
+    const len = dist(a, b);
+    if (left <= len || i === points.length - 1) {
+      const t = len ? Math.min(1, left / len) : 1;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, heading: Math.atan2(b.y - a.y, b.x - a.x) };
+    }
+    left -= len;
+  }
+  const last = points[points.length - 1];
+  return { ...last, heading: 0 };
+}
+
+function GuideLayer({ guide, geometry }) {
+  const { route, stall, progress } = guide;
+  if (!route || route.length < 2) return null;
+  let total = 0;
+  for (let i = 1; i < route.length; i += 1) total += dist(route[i - 1], route[i]);
+  const pos = along(route, total * progress);
+  const f = geometry.font;
+  const pts = route.map((p) => `${p.x},${p.y}`).join(" ");
+  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 250);
+  return (
+    <g pointerEvents="none">
+      {stall && (
+        <>
+          <polygon points={stall.poly.map((p) => `${p.x},${p.y}`).join(" ")} fill={`rgba(74,222,128,${0.35 + 0.35 * pulse})`} stroke="#bbf7d0" strokeWidth={f * 0.2} />
+          <circle cx={stall.centroid.x} cy={stall.centroid.y} r={geometry.carL * (0.6 + 0.25 * pulse)} fill="none" stroke="#4ade80" strokeWidth={f * 0.15} opacity={1 - pulse * 0.6} />
+        </>
+      )}
+      <polyline points={pts} fill="none" stroke="rgba(74,222,128,0.25)" strokeWidth={f * 1.1} strokeLinejoin="round" strokeLinecap="round" />
+      <polyline points={pts} fill="none" stroke="#4ade80" strokeWidth={f * 0.35} strokeLinejoin="round" strokeLinecap="round" strokeDasharray={`${f * 0.9} ${f * 0.6}`}>
+        <animate attributeName="stroke-dashoffset" from={f * 3} to="0" dur="0.8s" repeatCount="indefinite" />
+      </polyline>
+      <CarShape x={pos.x} y={pos.y} heading={pos.heading} L={geometry.carL * 1.1} W={geometry.carW * 1.1} color="#22c55e" selected />
+      {stall && (
+        <g transform={`translate(${stall.centroid.x},${stall.centroid.y - geometry.carL * 0.95})`}>
+          <rect x={-f * 1.6} y={-f * 0.7} width={f * 3.2} height={f * 1.4} rx={f * 0.35} fill="#22c55e" />
+          <text fontSize={f * 0.95} textAnchor="middle" dominantBaseline="central" fill="#052e16" fontWeight="800" fontFamily="ui-sans-serif, system-ui">{stall.label}</text>
+        </g>
+      )}
+    </g>
   );
 }
 

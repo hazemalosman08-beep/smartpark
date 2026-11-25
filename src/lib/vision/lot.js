@@ -485,3 +485,49 @@ export function sampleCalibration() {
     sample: true,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Driver directions from a route (lot space): "Drive 20 m", "Turn left", …
+
+export function directionsFor(route, stall, metersPerUnit = 1) {
+  if (!route || route.length < 2 || !stall) return [];
+  // The last two points are the stall front and centre: the turn into the space.
+  const drive = route.slice(0, Math.max(2, route.length - 2));
+  const steps = [];
+  let run = 0;
+  let heading = null;
+  const turnName = (delta) => {
+    const deg = (delta * 180) / Math.PI;
+    if (Math.abs(deg) < 30) return null;
+    // Screen/plan y points down, so a positive (clockwise) change is a right turn.
+    const side = deg > 0 ? "right" : "left";
+    return Math.abs(deg) > 120 ? `Make a U-turn to the ${side}` : `Turn ${side}`;
+  };
+  for (let i = 1; i < drive.length; i += 1) {
+    const a = drive[i - 1], b = drive[i];
+    const len = dist(a, b);
+    if (len < 1e-6) continue;
+    const h = Math.atan2(b.y - a.y, b.x - a.x);
+    if (heading !== null) {
+      const delta = ((h - heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      const turn = turnName(delta);
+      if (turn) {
+        if (run * metersPerUnit >= 1) steps.push({ kind: "straight", text: `Drive ${Math.max(1, Math.round(run * metersPerUnit))} m` });
+        steps.push({ kind: delta > 0 ? "right" : "left", text: turn });
+        run = 0;
+      }
+    }
+    heading = h;
+    run += len;
+  }
+  if (run * metersPerUnit >= 1) steps.push({ kind: "straight", text: `Drive ${Math.max(1, Math.round(run * metersPerUnit))} m` });
+  // Which side the space is on, relative to the last driving direction.
+  if (heading !== null) {
+    const last = drive[drive.length - 1];
+    const cross = Math.cos(heading) * (stall.centroid.y - last.y) - Math.sin(heading) * (stall.centroid.x - last.x);
+    steps.push({ kind: "park", text: `${stall.label} is on your ${cross > 0 ? "right" : "left"}` });
+  } else {
+    steps.push({ kind: "park", text: `Park in ${stall.label}` });
+  }
+  return steps;
+}

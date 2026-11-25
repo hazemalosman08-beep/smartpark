@@ -38,3 +38,15 @@ assert.ok(Math.abs(corner.x - 50) < 1e-6 && Math.abs(corner.y - 30) < 1e-6);
 const rec = L.recommendStall(lot, graph, new Map());
 console.log("recommended", rec.label);
 console.log("lot ok");
+
+// Directions: right turn then the space on the left
+{
+  const route = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
+  const stall = { label: "B2", centroid: { x: 8, y: 10 } };
+  const steps = L.directionsFor([...route.slice(0, 3), { x: 10, y: 9 }, { x: 11, y: 9 }], { label: "B2", centroid: { x: 11, y: 9 } }, 1);
+  console.log(steps.map((s) => s.text).join(" | "));
+  assert.equal(steps[0].text, "Drive 10 m");
+  assert.equal(steps[1].text, "Turn right");
+  assert.equal(steps.at(-1).kind, "park");
+  void stall;
+}

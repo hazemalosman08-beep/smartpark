@@ -3,6 +3,7 @@ import { Camera, Image as ImageIcon, Map as MapIcon, Navigation, Radio } from "l
 import TopBar from "@/components/SmartPark/TopBar";
 import LiveCamera from "@/components/SmartPark/LiveCamera";
 import LotView from "@/components/SmartPark/LotView";
+import DriverView from "@/components/SmartPark/DriverView";
 import { EmptyLot, EventLog, GuidanceCard, OccupancyCard, SimulationCard, VehicleList } from "@/components/SmartPark/LotPanel";
 import useVehicleSessions from "@/hooks/useVehicleSessions";
 import { loadLocalCalibration, saveLocalCalibration } from "@/lib/lotLayout";
@@ -154,6 +155,13 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lot, graph, fromEntrance, occupiedKey]);
   const route = useMemo(() => (recommended && lot.entrance ? routeToStall(lot, graph, recommended) : []), [lot, graph, recommended]);
+  // The driver screen always follows the real lot (camera), not the demo traffic.
+  const driverStatuses = live.streaming ? live.statuses : sim.statuses;
+  const driverKey = lot.stalls.map((s) => (driverStatuses.get(s.id)?.status === "occupied" ? 1 : 0)).join("");
+  const liveRecommended = useMemo(() => recommendStall(lot, graph, driverStatuses, lot.entrance, fromEntrance),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lot, graph, fromEntrance, driverKey]);
+  const liveRoute = useMemo(() => (liveRecommended && lot.entrance ? routeToStall(lot, graph, liveRecommended) : []), [lot, graph, liveRecommended]);
   const lotTracks = useMemo(() => shown.tracks.filter((t) => t.ground && t.vehicle_id), [shown.tracks]);
   const selectedTrack = lotTracks.find((t) => t.key === selected);
 
@@ -185,6 +193,25 @@ export default function Home() {
           </p>
         )}
       </main>
+
+      {tab === "driver" && (
+        <main className="flex flex-1 flex-col">
+          {lot.stalls.length ? (
+            <DriverView
+              lot={lot}
+              statuses={live.streaming ? live.statuses : sim.statuses}
+              tracks={(live.streaming ? live.tracks : []).filter((t) => t.ground && t.vehicle_id && t.motion === "parked")}
+              recommended={liveRecommended}
+              route={liveRoute}
+              backdrop={backdrop}
+              photo={photo}
+              onPhotoChange={setPhoto}
+            />
+          ) : (
+            <EmptyLot onSample={() => setCalibrationState(sampleCalibration())} onCamera={() => setTab("camera")} />
+          )}
+        </main>
+      )}
 
       {tab === "lot" && (
         <main className="grid flex-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_340px] lg:p-4">
