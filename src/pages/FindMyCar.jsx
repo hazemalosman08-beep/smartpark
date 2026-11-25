@@ -5,6 +5,7 @@ import { db } from "@/lib/localStore";
 import { loadLotLayout } from "@/lib/lotLayout";
 import { LOCATION_STATUS, formatClock, formatDuration } from "@/lib/vehicleSessions";
 import FindCarMap from "@/components/SmartPark/FindCarMap";
+import { loadMyCar } from "@/hooks/useGuidance";
 
 // Drivers only: look up the temporary visual ID from the entry display and see
 // where the car is. Nothing else about the lot is exposed here.
@@ -17,7 +18,8 @@ const normalizeId = (value) => {
 };
 
 export default function FindMyCar() {
-  const [query, setQuery] = useState("");
+  // The car the driver guide saw you park (on this device) is filled in.
+  const [query, setQuery] = useState(() => loadMyCar()?.vehicle_id || "");
   const [session, setSession] = useState(null);
   const [searched, setSearched] = useState(false);
   const [busy, setBusy] = useState(false);

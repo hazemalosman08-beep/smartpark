@@ -1,14 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Cpu, Eraser, FileVideo, Grid3x3, Loader2, MapPin, Pause, Play, Route, ScanSearch,
   Smartphone, Sparkles, Square, SquareDashed, Trash2, Video, VideoOff, LogOut as ExitIcon,
-  Building2,
+  Building2, Building, Accessibility,
 } from "lucide-react";
 import RemoteCameraDialog from "@/components/SmartPark/RemoteCameraDialog";
 import { makePairCode, receivePhoneCamera } from "@/lib/phoneLink";
 import { detectVehiclesLocal, onDetectorStatus, preloadDetector, setDetectorModel, MODELS } from "@/lib/vision/vehicleDetector";
 import { createTracker } from "@/lib/vision/tracker";
 import {
-  assignVehiclesToStalls, createOccupancy, dedupeStalls, occupancyCounts, groundPoint, guessView, makeStallRow, nextRowLetter,
+  assignVehiclesToStalls, createOccupancy, dedupeStalls, occupancyCounts, groundPoint, guessView, makeStallRow, nextRowLetter, stallIoU,
 } from "@/lib/vision/lot";
 import { drawOverlay } from "@/lib/vision/overlay";
 import { clearPhoto, loadPhoto, savePhoto } from "@/lib/photoStore";
@@ -22,10 +22,12 @@ const TOOLS = {
   stall: { label: "Single stall", icon: Square, points: 4, color: "#22d3ee", hint: ["Front-left corner (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
   lane: { label: "Driving lane", icon: Route, points: Infinity, color: "#60a5fa", hint: ["Click along the centre of the lane, in driving direction. Double-click or press Enter to finish."] },
   entrance: { label: "Entrance", icon: MapPin, points: 1, color: "#4ade80", hint: ["Click where cars enter the lot"] },
-  building: { label: "Building", icon: Building2, points: 1, color: "#fbbf24", hint: ["Click the building entrance drivers walk to. The guide then picks the free space with the shortest walk."] },
+  building: { label: "Building", icon: Building2, points: 1, color: "#fbbf24", hint: ["Click a building entrance drivers walk to. Each click adds one destination (drivers choose on the Driver tab); the guide picks the free space with the shortest walk."] },
+  outline: { label: "Building outline", icon: Building, points: Infinity, color: "#fbbf24", hint: ["Click around the building's outline (seen from above). Double-click or press Enter to finish. It is shown as a 3D block on the Driver tab."] },
+  spaceType: { label: "Space type", icon: Accessibility, points: 0, color: "#60a5fa", hint: ["Click a space to switch it: normal → accessible → reserved → normal"] },
   exit: { label: "Exit", icon: ExitIcon, points: 1, color: "#f472b6", hint: ["Click where cars leave the lot"] },
   ground: { label: "Lot corners", icon: SquareDashed, points: 4, color: "#38bdf8", hint: ["Click the far-left corner of the paved lot", "Far-right corner", "Near-right corner", "Near-left corner"] },
-  erase: { label: "Remove space", icon: Eraser, points: 0, color: "#f87171", hint: ["Click a stall or lane to remove it"] },
+  erase: { label: "Remove", icon: Eraser, points: 0, color: "#f87171", hint: ["Click a space, lane, building or building outline to remove it"] },
 };
 
 const SOURCES_IDLE = "none";
@@ -112,6 +114,7 @@ export default function LiveCamera({
       stalls: calRef.current.stalls,
       statuses: [...(liveRef.current.statuses || new Map()).entries()],
       vehicles: liveRef.current.tracks.filter((t) => t.state !== "lost").length,
+      tracks: liveRef.current.tracks.map((t) => ({ id: t.vehicle_id, state: t.state, motion: t.motion, ground: Boolean(t.ground) })),
     });
     return () => { delete window.__smartparkLive; };
   }, []);
@@ -506,6 +509,12 @@ export default function LiveCamera({
   const update = (patch) => onCalibrationChange?.({ ...calRef.current, ...patch, sample: false });
 
   const finishLane = (points = draft) => {
+    if (tool === "outline") {
+      if (points.length >= 3) update({ footprints: [...(calRef.current.footprints || []), { id: `fp-${Date.now()}`, points }] });
+      setDraft([]);
+      setTool(null);
+      return;
+    }
     if (points.length >= 2) update({ lanes: [...calibration.lanes, { id: `lane-${Date.now()}`, points }] });
     setDraft([]);
   };
@@ -518,7 +527,15 @@ export default function LiveCamera({
       // Hand-drawn spaces replace any found automatically in the same place.
       update({ stalls: dedupeStalls([...cal.stalls, ...stalls]) });
     } else if (tool === "entrance") update({ entrance: points[0] });
-    else if (tool === "building") update({ building: points[0] });
+    else if (tool === "building") {
+      // The first building is the main one; more become choices for drivers.
+      if (!cal.building) update({ building: points[0] });
+      else {
+        const n = (cal.buildings || []).length + 2;
+        const name = (typeof window !== "undefined" && window.prompt("Name this building (drivers pick it as their destination)", `Building ${n}`)) || `Building ${n}`;
+        update({ buildings: [...(cal.buildings || []), { id: `b-${Date.now()}`, ...points[0], name: name.slice(0, 40) }] });
+      }
+    }
     else if (tool === "exit") update({ exit: points[0] });
     else if (tool === "ground") update({ ground: { quad: points, width: groundSize.width, length: groundSize.length } });
     setDraft([]);
@@ -529,12 +546,27 @@ export default function LiveCamera({
     if (!tool) return;
     e.preventDefault();
     const p = pointFrom(e);
+    if (tool === "spaceType") {
+      const cal = calRef.current;
+      const stall = [...cal.stalls].reverse().find((s) => pointInPolygon(p, s.poly));
+      if (stall) {
+        const next = { undefined: "accessible", accessible: "reserved", reserved: undefined }[stall.kind];
+        update({ stalls: cal.stalls.map((s) => (s.id === stall.id ? { ...s, kind: next } : s)) });
+      }
+      return;
+    }
     if (tool === "erase") {
       const cal = calRef.current;
+      const near = (q) => Math.hypot(q.x - p.x, q.y - p.y) < 2.5;
+      if (cal.building && near(cal.building)) { update({ building: null }); return; }
+      const extra = (cal.buildings || []).find(near);
+      if (extra) { update({ buildings: cal.buildings.filter((b) => b !== extra) }); return; }
       const stall = [...cal.stalls].reverse().find((s) => pointInPolygon(p, s.poly));
       if (stall) { update({ stalls: cal.stalls.filter((s) => s.id !== stall.id) }); return; }
       const lane = cal.lanes.find((l) => l.points.some((a, i) => i && projectOnSegment(p, l.points[i - 1], a).distance < 1.5));
-      if (lane) update({ lanes: cal.lanes.filter((l) => l !== lane) });
+      if (lane) { update({ lanes: cal.lanes.filter((l) => l !== lane) }); return; }
+      const fp = (cal.footprints || []).find((f) => pointInPolygon(p, f.points));
+      if (fp) update({ footprints: cal.footprints.filter((f) => f !== fp) });
       return;
     }
     const spec = TOOLS[tool];
@@ -547,7 +579,7 @@ export default function LiveCamera({
     const onKey = (e) => {
       if (!tool) return;
       if (e.key === "Escape") { setDraft([]); setTool(null); }
-      if (e.key === "Enter" && tool === "lane") finishLane();
+      if (e.key === "Enter" && (tool === "lane" || tool === "outline")) finishLane();
       if (e.key === "Backspace" && draft.length) setDraft(draft.slice(0, -1));
     };
     window.addEventListener("keydown", onKey);
@@ -584,11 +616,18 @@ export default function LiveCamera({
         keepLanes: cal.lanes.filter((l) => !l.auto),
         entrance: cal.entrance && !cal.entrance.auto ? cal.entrance : null,
       });
-      update({ stalls: result.stalls, lanes: result.lanes, entrance: result.entrance ?? cal.entrance, view, ground });
+      // Space types set by hand (accessible, reserved) survive a new search.
+      const typed = cal.stalls.filter((st) => st.kind);
+      const stalls = typed.length ? result.stalls.map((st) => {
+        if (st.kind) return st;
+        const old = typed.find((o) => stallIoU(o, st) > 0.4);
+        return old ? { ...st, kind: old.kind } : st;
+      }) : result.stalls;
+      update({ stalls, lanes: result.lanes, entrance: result.entrance ?? cal.entrance, view, ground });
       const { painted, fromCars } = result.stats;
       setNotice(
         result.stalls.length
-          ? `Found ${result.stalls.length} spaces — ${painted} from painted lines, ${fromCars} from parked cars.${ground ? " Tilted camera straightened." : view !== "overhead" ? " Painted lines are read in Overhead view only." : ""} Fix any with Remove space / Add row of spaces.`
+          ? `Found ${result.stalls.length} spaces — ${painted} from painted lines, ${fromCars} from parked cars.${ground ? " Tilted camera straightened." : view !== "overhead" ? " Painted lines are read in Overhead view only." : ""} Fix any with Remove / Add row of spaces.`
           : manual ? "No spaces found. Use Add row of spaces, or switch Camera view to Overhead for a top-down picture." : null,
       );
     } catch (err) {
@@ -665,7 +704,7 @@ export default function LiveCamera({
             onPointerDown={onPointerDown}
             onPointerMove={(e) => { cursorRef.current = tool ? pointFrom(e) : null; }}
             onPointerLeave={() => { cursorRef.current = null; }}
-            onDoubleClick={() => tool === "lane" && finishLane(draft.slice(0, -1).length >= 2 ? draft.slice(0, -1) : draft)}
+            onDoubleClick={() => (tool === "lane" || tool === "outline") && finishLane(draft.slice(0, -1).length >= 2 ? draft.slice(0, -1) : draft)}
           >
             <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
           </div>
@@ -755,6 +794,7 @@ export default function LiveCamera({
           </label>
         )}
         {tool === "lane" && draft.length >= 2 && <Btn onClick={() => finishLane()}>Finish lane</Btn>}
+        {tool === "outline" && draft.length >= 3 && <Btn onClick={() => finishLane()}>Finish outline</Btn>}
         {tool === "ground" && (
           <span className="flex items-center gap-1 text-[11px] text-neutral-300">
             lot size
@@ -771,7 +811,7 @@ export default function LiveCamera({
         <Btn active={calibration.view === "overhead"} onClick={() => update({ view: "overhead" })}>Overhead</Btn>
         <Btn
           disabled={!calibration.stalls.length && !calibration.lanes.length && !calibration.entrance && !calibration.ground && !calibration.building}
-          onClick={() => { if (window.confirm("Remove all stalls, lanes, entrance/exit, building and the lot corners?")) update({ stalls: [], lanes: [], entrance: null, exit: null, ground: null, building: null }); }}
+          onClick={() => { if (window.confirm("Remove all stalls, lanes, entrance/exit, buildings and the lot corners?")) update({ stalls: [], lanes: [], entrance: null, exit: null, ground: null, building: null, buildings: [], footprints: [] }); }}
         >
           <Trash2 className="h-3.5 w-3.5" /> Clear map
         </Btn>

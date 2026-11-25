@@ -61,19 +61,39 @@ export function drawOverlay(ctx, { width, height, calibration, statuses, tracks 
       ctx.lineWidth = highlight === stall.id ? 3 : 1.5;
       ctx.stroke();
       const c = stall.poly.reduce((s, p) => ({ x: s.x + p.x / stall.poly.length, y: s.y + p.y / stall.poly.length }), { x: 0, y: 0 });
-      label(ctx, stall.label, c.x * sx, c.y * sy, tone.stroke, font * 0.8, "#0b0f0b");
+      const tag = stall.kind === "accessible" ? `♿ ${stall.label}` : stall.kind === "reserved" ? `R ${stall.label}` : stall.label;
+      if (stall.kind) {
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = stall.kind === "accessible" ? "#60a5fa" : "#a78bfa";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      label(ctx, tag, c.x * sx, c.y * sy, stall.kind === "accessible" ? "#60a5fa" : stall.kind === "reserved" ? "#a78bfa" : tone.stroke, font * 0.8, "#0b0f0b");
     });
   }
 
-  if (calibration?.building) {
-    const [x, y] = P(calibration.building);
+  // Building outlines drawn by hand
+  (calibration?.footprints || []).forEach((f) => {
+    ctx.beginPath();
+    f.points.forEach((p, i) => (i ? ctx.lineTo(...P(p)) : ctx.moveTo(...P(p))));
+    ctx.closePath();
+    ctx.fillStyle = "rgba(251,191,36,0.12)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(251,191,36,0.9)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+
+  [calibration?.building && { ...calibration.building, name: "BUILDING" }, ...(calibration?.buildings || [])].filter(Boolean).forEach((b) => {
+    const [x, y] = P(b);
     ctx.fillStyle = "#fbbf24";
     ctx.fillRect(x - 7, y - 7, 14, 14);
     ctx.strokeStyle = "#000";
     ctx.lineWidth = 1.5;
     ctx.strokeRect(x - 7, y - 7, 14, 14);
-    label(ctx, "BUILDING", x, y - 16, "#fbbf24", font * 0.8, "#000");
-  }
+    label(ctx, String(b.name || "BUILDING").toUpperCase(), x, y - 16, "#fbbf24", font * 0.8, "#000");
+  });
 
   ["entrance", "exit"].forEach((kind) => {
     const p = calibration?.[kind];

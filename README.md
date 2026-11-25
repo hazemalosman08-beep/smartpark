@@ -13,12 +13,23 @@ A parking-lot camera app that runs entirely in the browser. No backend and no ac
   and the route to it. **Photo** shows the real camera picture underneath, so the plan looks exactly like the lot.
   **Map** shows a clean drawing with each car in its real colour. **Guide demo** starts from the real lot and
   animates new cars being led along the aisles to the best free space.
-- **Driver tab:** the screen drivers see, on an entrance display (Full screen) or a phone. It shows how many
-  spaces are open and which space to take, gives step-by-step directions, and animates a car driving the route
-  on the real lot. It follows the camera live: if the space is taken, the next best one is shown.
-- **Building:** on the Camera tab, the Building tool marks where drivers walk to. The guide then sends each
-  driver to the free space with the shortest walk to it, and the directions end with the walking distance.
-  Routes are planned over the open pavement between the spaces (or along lanes drawn by hand).
+- **Driver tab (3D guide):** a GPS-style 3D view of the real lot for an entrance display or a phone, with the
+  flat 2D map kept as a fallback (3D/2D switch). Three views: **Driver** (tilted, behind the car), **Bird's-eye**
+  and **Free** (drag to rotate, scroll/pinch to zoom). Light and dark mode.
+  - Built only from SmartPark's own data: spaces and entrance from the map; islands, kerbs and trees found in
+    the camera picture; buildings found in it or drawn with **Building outline** (a photo has no heights, so
+    buildings are simple three-storey blocks). Nothing is invented.
+  - Spaces: green free, red taken, blue reserved, gray not verified yet. Cars sit in taken spaces in the
+    colour the camera saw; tracked cars glide between tracker positions and keep their IDs.
+  - A blue route with moving arrows, the next turn, arrival time and distance left. Routes never cross spaces,
+    islands or buildings. Choose the destination building and "I need an accessible space".
+  - **Your car:** with a live camera, pick your car (its ID) to be followed; the route is re-planned from where
+    it is, a new space is given if yours is taken, and when the camera sees it park the space is saved for
+    Find my car. Without a live position the guide plays a labelled *route preview* from the entrance.
+  - The screen always says where its data comes from: live camera, photo snapshot or simulated.
+- **Building:** on the Camera tab, the Building tool marks where drivers walk to; each extra click adds another
+  destination drivers can choose. The guide sends each driver to the free space with the shortest walk.
+  **Space type** (More tools) marks spaces accessible or reserved.
 - **Tilted cameras are straightened automatically:** the tilt is measured from how cars shrink toward the
   back of the picture, refined so painted spaces come out equal width and about 2.5 x 5 m, then spaces are
   found in the straightened picture and the Lot/Driver maps are drawn top-down. Lot corners (More tools)

@@ -19,6 +19,8 @@ export const EMPTY_CALIBRATION = {
   lanes: [],
   entrance: null,
   building: null, // where drivers walk to (building entrance), camera %
+  buildings: [], // more destinations: [{ id, x, y, name }] in camera %
+  footprints: [], // building outlines drawn by hand: [{ id, points }] in camera %
   exit: null,
   ground: null, // { quad: [4 points in camera %], width: metres, length: metres }
 };
@@ -27,6 +29,8 @@ export function normalizeCalibration(value) {
   const c = { ...EMPTY_CALIBRATION, ...(value || {}) };
   c.stalls = Array.isArray(c.stalls) ? c.stalls.filter((s) => s?.poly?.length >= 3) : [];
   c.lanes = Array.isArray(c.lanes) ? c.lanes.filter((l) => l?.points?.length >= 2) : [];
+  c.footprints = Array.isArray(c.footprints) ? c.footprints.filter((f) => f?.points?.length >= 3) : [];
+  c.buildings = Array.isArray(c.buildings) ? c.buildings.filter((b) => Number.isFinite(b?.x) && Number.isFinite(b?.y)) : [];
   if (!(c.aspect > 0)) c.aspect = 16 / 9;
   return c;
 }
@@ -202,11 +206,25 @@ export function deriveLot(calibration) {
   const entrance = c.entrance ? toLot(c.entrance) : null;
   const building = c.building ? toLot(c.building) : null;
   const exit = c.exit ? toLot(c.exit) : null;
+  // Every destination drivers can pick; the first is the main building.
+  const footprints = c.footprints.map((f) => ({ id: f.id, points: f.points.map(toLot) }));
+  const buildings = [
+    ...(c.building ? [{ id: "main", name: c.building.name || "Main building", ...building }] : []),
+    ...c.buildings.map((b, i) => ({ id: b.id || `b${i + 2}`, name: b.name || `Building ${i + 2}`, ...toLot(b) })),
+  ];
+  // Real-world scale. Without a measured lot, painted spaces are about 2.5 m
+  // wide: that is a far better yardstick than an assumed frame width.
+  let scaleSource = quad?.length === 4 && c.ground?.width > 0 ? (c.ground.auto ? "estimated" : "measured") : "assumed";
+  if (scaleSource === "assumed" && stalls.length >= 3) {
+    const widths = stalls.map((st) => dist(st.poly[0], st.poly[1])).filter((w) => w > 0).sort((a, b) => a - b);
+    const w = widths[Math.floor(widths.length / 2)];
+    if (w > 0) { metersPerUnit = 2.5 / w; scaleSource = "estimated"; }
+  }
 
   // Bounds: the ground rectangle (grown to include anything drawn outside it).
   // Without a ground calibration the plan is cropped to what was mapped, so sky
   // and buildings in the camera picture do not take up the plan.
-  const pts = [...stalls.flatMap((s) => s.poly), ...lanes.flatMap((l) => l.points), entrance, exit, building].filter(Boolean)
+  const pts = [...stalls.flatMap((s) => s.poly), ...lanes.flatMap((l) => l.points), entrance, exit, ...buildings].filter(Boolean)
     .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
   const rectified = Boolean(quad?.length === 4 && c.ground.width > 0);
   let minX = 0, minY = 0, maxX = width, maxY = height;
@@ -227,7 +245,7 @@ export function deriveLot(calibration) {
   return {
     calibration: c, H, toLot, toCamera, width, height, metersPerUnit,
     bounds: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
-    stalls, lanes, entrance, exit, building,
+    stalls, lanes, entrance, exit, building, buildings, footprints, scaleSource,
     rectified,
   };
 }
@@ -433,13 +451,16 @@ function simplifyPath(points) {
 }
 
 // The route a driver takes to a stall: lanes to the point in front of it, then in.
-export function routeToStall(lot, graph, stall, from = lot.entrance) {
+export function routeToStall(lot, graph, stall, from = lot.entrance, { obstacle = null } = {}) {
   if (!stall || !from) return [];
   const aisle = { x: stall.front.x + (stall.front.x - stall.back.x) * 0.35, y: stall.front.y + (stall.front.y - stall.back.y) * 0.35 };
   // Lanes drawn by hand are followed exactly; otherwise the route is planned
   // over the open pavement between the spaces (found aisles can be incomplete).
   const manualLanes = lot.lanes.some((l) => !l.auto);
-  const path = manualLanes ? routeBetween(graph, from, aisle) : gridRoute(lot, from, aisle, { ignore: stall.id });
+  let path = manualLanes ? routeBetween(graph, from, aisle) : gridRoute(lot, from, aisle, { ignore: stall.id, obstacle });
+  // Islands/buildings read from the picture are avoided; if they seem to wall
+  // the space off completely, the picture was misread: plan without them.
+  if (!manualLanes && obstacle && path.length <= 2) path = gridRoute(lot, from, aisle, { ignore: stall.id });
   return [...path, stall.front, stall.centroid];
 }
 
@@ -492,8 +513,14 @@ export function stallCost(lot, graph, stall, distances = null) {
 }
 
 // Recommended free stall.
-export function recommendStall(lot, graph, statuses, from = lot.entrance, distances = null) {
-  const free = lot.stalls.filter((s) => statuses?.get(s.id)?.status !== "occupied" && !s.blocked);
+// Reserved spaces are never recommended; accessible spaces only to drivers who
+// need one (and then first).
+export function recommendStall(lot, graph, statuses, from = lot.entrance, distances = null, { accessible = false, exclude = null } = {}) {
+  let free = lot.stalls.filter((s) => statuses?.get(s.id)?.status !== "occupied" && !s.blocked && s.kind !== "reserved" && !exclude?.has(s.id));
+  if (accessible) {
+    const acc = free.filter((s) => s.kind === "accessible");
+    if (acc.length) free = acc;
+  } else free = free.filter((s) => s.kind !== "accessible");
   if (!free.length) return null;
   if (!from && !lot.building) return free[0];
   const table = from && graph.nodes.length ? distances || distancesFrom(graph, from) : null;
@@ -641,7 +668,7 @@ function simplifyRDP(points, eps) {
   return [...simplifyRDP(points.slice(0, index + 1), eps).slice(0, -1), ...simplifyRDP(points.slice(index), eps)];
 }
 
-export function gridRoute(lot, from, to, { ignore = null } = {}) {
+export function gridRoute(lot, from, to, { ignore = null, obstacle = null } = {}) {
   if (!from || !to) return [];
   const widths = lot.stalls.map((s) => dist(s.poly[0], s.poly[1])).filter(Number.isFinite).sort((x, y) => x - y);
   const stallW = widths.length ? widths[Math.floor(widths.length / 2)] : lot.bounds.w / 40;
@@ -656,6 +683,12 @@ export function gridRoute(lot, from, to, { ignore = null } = {}) {
     const j0 = Math.max(0, Math.floor((Math.min(...ys) - b.y) / cell)), j1 = Math.min(ny - 1, Math.floor((Math.max(...ys) - b.y) / cell));
     for (let j = j0; j <= j1; j += 1) for (let i = i0; i <= i1; i += 1) {
       if (pointInPolygon({ x: b.x + (i + 0.5) * cell, y: b.y + (j + 0.5) * cell }, s.poly)) blocked[j * nx + i] = 1;
+    }
+  }
+  // Islands, kerbs and buildings (from the picture): not drivable.
+  if (obstacle) {
+    for (let j = 0; j < ny; j += 1) for (let i = 0; i < nx; i += 1) {
+      if (!blocked[j * nx + i] && obstacle({ x: b.x + (i + 0.5) * cell, y: b.y + (j + 0.5) * cell })) blocked[j * nx + i] = 1;
     }
   }
   const toCell = (p) => [Math.max(0, Math.min(nx - 1, Math.floor((p.x - b.x) / cell))), Math.max(0, Math.min(ny - 1, Math.floor((p.y - b.y) / cell)))];

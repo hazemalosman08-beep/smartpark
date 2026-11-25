@@ -6,6 +6,7 @@ import LotView from "@/components/SmartPark/LotView";
 import DriverView from "@/components/SmartPark/DriverView";
 import { EmptyLot, EventLog, GuidanceCard, OccupancyCard, SimulationCard, VehicleList } from "@/components/SmartPark/LotPanel";
 import useVehicleSessions from "@/hooks/useVehicleSessions";
+import useScene from "@/hooks/useScene";
 import { loadLocalCalibration, saveLocalCalibration } from "@/lib/lotLayout";
 import {
   EMPTY_CALIBRATION, buildLaneGraph, deriveLot, distancesFrom, normalizeCalibration, occupancyCounts, pathLength, recommendStall, stallCost,
@@ -154,13 +155,11 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lot, graph, fromEntrance, occupiedKey]);
   const route = useMemo(() => (recommended && lot.entrance ? routeToStall(lot, graph, recommended) : []), [lot, graph, recommended]);
-  // The driver screen always follows the real lot (camera), not the demo traffic.
-  const driverStatuses = realStatuses;
-  const driverKey = lot.stalls.map((s) => (driverStatuses.get(s.id)?.status === "occupied" ? 1 : 0)).join("");
-  const liveRecommended = useMemo(() => recommendStall(lot, graph, driverStatuses, lot.entrance, fromEntrance),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lot, graph, fromEntrance, driverKey]);
-  const liveRoute = useMemo(() => (liveRecommended && lot.entrance ? routeToStall(lot, graph, liveRecommended) : []), [lot, graph, liveRecommended]);
+  // The driver screen always follows the real lot (camera), not the demo
+  // traffic; where the numbers come from is shown on it.
+  const driverSource = live.streaming ? (live.still ? "photo" : "live") : "simulated";
+  const driverTracks = useMemo(() => (live.streaming ? live.tracks.filter((t) => t.ground && t.vehicle_id) : []), [live]);
+  const { scene, features, rect: sceneRect } = useScene(tab === "driver" ? backdrop : null, lot);
   const lotTracks = useMemo(() => shown.tracks.filter((t) => t.ground && t.vehicle_id), [shown.tracks]);
   const selectedTrack = lotTracks.find((t) => t.key === selected);
 
@@ -198,10 +197,15 @@ export default function Home() {
           {lot.stalls.length ? (
             <DriverView
               lot={lot}
+              graph={graph}
+              fromEntrance={fromEntrance}
               statuses={realStatuses}
-              recommended={liveRecommended}
-              route={liveRoute}
+              tracks={driverTracks}
+              source={driverSource}
               backdrop={backdrop}
+              scene={scene}
+              features={features}
+              sceneRect={sceneRect}
             />
           ) : (
             <EmptyLot onSample={() => setCalibrationState(sampleCalibration())} onCamera={() => setTab("camera")} />
