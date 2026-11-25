@@ -13,6 +13,7 @@
 //    accepts any input size), which finds small, distant and crowded cars the
 //    640 px pass misses (dense test lot: 42 -> 83 cars, side-angle lot 28 -> 43)
 import * as ort from "onnxruntime-web/webgpu";
+import { polygonArea, polygonOverlapArea } from "./geometry.js";
 
 // The runtime's .wasm is bundled by Vite next to this worker (no CDN needed).
 ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, self.navigator?.hardwareConcurrency || 2) : 1;
@@ -30,6 +31,31 @@ const HIRES = 1600; // high-resolution pass (long side)
 let session = null;
 let backend = "";
 let loading = null;
+// Aerial model (YOLO11-OBB, trained on aerial photos: "small/large vehicle"
+// with rotated boxes). Street-photo models barely see cars from straight above.
+let aerial = null;
+let aerialLoading = null;
+
+async function loadAerial(url) {
+  if (aerial) return;
+  if (!aerialLoading) {
+    aerialLoading = (async () => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Could not download the aerial model (${response.status})`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const providers = self.navigator?.gpu ? ["webgpu", "wasm"] : ["wasm"];
+      let lastError = null;
+      for (const provider of providers) {
+        try {
+          aerial = await ort.InferenceSession.create(bytes, { executionProviders: [provider], graphOptimizationLevel: "all" });
+          return;
+        } catch (error) { lastError = error; aerial = null; }
+      }
+      throw lastError || new Error("No inference backend for the aerial model");
+    })();
+  }
+  try { await aerialLoading; } catch (error) { aerialLoading = null; throw error; }
+}
 
 async function load(modelUrl) {
   if (session) return;
@@ -170,6 +196,84 @@ async function inferCrop(bitmap, crop, frame, minScore, lookalikes = true, size 
   return nms(boxes, 0.7);
 }
 
+// ---- aerial (rotated-box) model -------------------------------------------
+const AERIAL_SIZE = 1024;
+const AERIAL_VEHICLES = new Map([[9, "truck"], [10, "car"]]);
+
+function rotatedCorners(cx, cy, w, h, a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([x, y]) => ({ x: cx + x * c - y * s, y: cy + x * s + y * c }));
+}
+
+function rotatedIoU(a, b) {
+  const inter = polygonOverlapArea(a.corners, b.corners);
+  if (!inter) return 0;
+  return inter / (polygonArea(a.corners) + polygonArea(b.corners) - inter);
+}
+
+async function inferAerial(bitmap, crop, frame, minScore) {
+  const { input, scale, padX, padY, W, H } = preprocess(bitmap, crop, AERIAL_SIZE, false);
+  const out = (await aerial.run({ [aerial.inputNames[0]]: new ort.Tensor("float32", input, [1, 3, H, W]) }))[aerial.outputNames[0]];
+  const v = out.data;
+  const [, channels, n] = out.dims; // [1, 20, N]: cx cy w h, 15 classes, angle
+  const boxes = [];
+  for (let i = 0; i < n; i += 1) {
+    let best = 0, cls = -1;
+    for (let c = 4; c < channels - 1; c += 1) {
+      const sc = v[c * n + i];
+      if (sc > best) { best = sc; cls = c - 4; }
+    }
+    if (!AERIAL_VEHICLES.has(cls) || best < minScore) continue;
+    const cx = (v[i] - padX) / scale + crop.x, cy = (v[n + i] - padY) / scale + crop.y;
+    const w = v[2 * n + i] / scale, h = v[3 * n + i] / scale;
+    const angle = v[(channels - 1) * n + i];
+    if (w < 3 || h < 3) continue;
+    const corners = rotatedCorners(cx, cy, w, h, angle);
+    const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
+    boxes.push({
+      x1: Math.max(0, Math.min(...xs)), y1: Math.max(0, Math.min(...ys)),
+      x2: Math.min(frame.width, Math.max(...xs)), y2: Math.min(frame.height, Math.max(...ys)),
+      score: best, label: AERIAL_VEHICLES.get(cls), corners, aerial: true,
+    });
+  }
+  const kept = [];
+  for (const b of boxes.sort((a, c) => c.score - a.score)) if (kept.every((k) => rotatedIoU(b, k) < 0.5)) kept.push(b);
+  return kept;
+}
+
+
+function toPercent(b, frame) {
+  return {
+    x: (b.x1 / frame.width) * 100,
+    y: (b.y1 / frame.height) * 100,
+    w: ((b.x2 - b.x1) / frame.width) * 100,
+    h: ((b.y2 - b.y1) / frame.height) * 100,
+    // Found in two passes / by both models: very likely a real vehicle.
+    score: Math.round((b.votes >= 2 ? Math.max(b.score, 0.3) : b.score) * 1000) / 1000,
+    label: b.label,
+    lookalike: Boolean(b.lookalike),
+    aerial: Boolean(b.aerial),
+    // Rotated outline of the car (aerial model), in % of the frame.
+    corners: b.corners ? b.corners.map((p) => ({ x: (p.x / frame.width) * 100, y: (p.y / frame.height) * 100 })) : undefined,
+  };
+}
+
+// Aerial-model cars first (tight rotated boxes); a street-model box covering
+// the same car is merged into it, others are kept as they are.
+function mergeAerial(aerialBoxes, general) {
+  const out = aerialBoxes.map((b) => ({ ...b, votes: 1 }));
+  for (const g of general) {
+    const twin = out.find((a) => iou(a, g) >= 0.4 || ios(a, g) >= 0.7);
+    if (twin) {
+      twin.votes += 1;
+      twin.score = Math.min(0.99, Math.max(twin.score, g.score) + 0.05);
+      continue;
+    }
+    out.push(g);
+  }
+  return out;
+}
+
 function tilesFor(width, height) {
   const tw = Math.round(width * 0.6);
   const th = Math.round(height * 0.6);
@@ -227,6 +331,21 @@ self.onmessage = async (event) => {
       const frame = { width: bitmap.width, height: bitmap.height };
       const minScore = msg.minScore ?? 0.12;
       const whole = { x: 0, y: 0, w: frame.width, h: frame.height };
+      let aerialBoxes = [];
+      if (msg.aerial && msg.aerialUrl) {
+        try {
+          await loadAerial(msg.aerialUrl);
+          aerialBoxes = await inferAerial(bitmap, whole, frame, Math.max(0.2, minScore));
+        } catch {
+          aerialBoxes = [];
+        }
+      }
+      if (msg.aerial === "only") {
+        bitmap.close?.();
+        const boxes = aerialBoxes.map((b) => toPercent(b, frame));
+        self.postMessage({ type: "result", id: msg.id, boxes, ms: performance.now() - started, backend, tiled: false, hires: false, aerial: true, width: frame.width, height: frame.height });
+        return;
+      }
       let all = await inferCrop(bitmap, whole, frame, minScore);
       // Small pictures need the close-ups most, so tiles are used at any size.
       const useTiles = Boolean(msg.tiles);
@@ -244,18 +363,10 @@ self.onmessage = async (event) => {
         }
       }
       bitmap.close?.();
-      const fused = useTiles || useHires ? fuse(all) : all.map((b) => ({ ...b, votes: 1 }));
-      const boxes = fused.map((b) => ({
-        x: (b.x1 / frame.width) * 100,
-        y: (b.y1 / frame.height) * 100,
-        w: ((b.x2 - b.x1) / frame.width) * 100,
-        h: ((b.y2 - b.y1) / frame.height) * 100,
-        // Found in two passes at different scales: very likely a real vehicle.
-        score: Math.round((b.votes >= 2 ? Math.max(b.score, 0.3) : b.score) * 1000) / 1000,
-        label: b.label,
-        lookalike: Boolean(b.lookalike),
-      }));
-      self.postMessage({ type: "result", id: msg.id, boxes, ms: performance.now() - started, backend, tiled: useTiles, hires: useHires, width: frame.width, height: frame.height });
+      let fused = useTiles || useHires ? fuse(all) : all.map((b) => ({ ...b, votes: 1 }));
+      if (aerialBoxes.length) fused = mergeAerial(aerialBoxes, fused);
+      const boxes = fused.map((b) => toPercent(b, frame));
+      self.postMessage({ type: "result", id: msg.id, boxes, ms: performance.now() - started, backend, tiled: useTiles, hires: useHires, aerial: aerialBoxes.length > 0, width: frame.width, height: frame.height });
     }
   } catch (error) {
     self.postMessage({ type: "error", id: msg.id, message: error?.message || String(error) });

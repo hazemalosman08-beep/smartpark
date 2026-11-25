@@ -386,6 +386,9 @@ export default function LiveCamera({
             tiles: isStill || (boost && detector.backend === "webgpu"),
             hires: isStill || boost,
             overhead: calRef.current.view === "overhead",
+            // Aerial-photo model: on every photo (the view is not known yet) and
+            // on live video when the camera looks down on the lot.
+            aerial: isStill || calRef.current.view === "overhead",
           });
           if (cancelled) break;
           cycleRef.current = cycle;
@@ -533,7 +536,12 @@ export default function LiveCamera({
     const vehicles = liveRef.current.tracks.filter((t) => t.state !== "lost" && (still || t.motion !== "moving"));
     // First automatic run on an empty map: work out whether the camera looks
     // straight down or from the side.
-    const view = (!manual && !cal.stalls.length && guessView(vehicles)) || cal.view || "angled";
+    // The aerial-photo model only recognises cars seen from above: when it found
+    // most of them, the picture is top-down.
+    const boxes = liveRef.current.lastBoxes || [];
+    const aerialShare = boxes.length ? boxes.filter((b) => b.aerial).length / boxes.length : 0;
+    const looksAerial = boxes.length >= 4 && aerialShare >= 0.6 ? "overhead" : null;
+    const view = (!manual && !cal.stalls.length && (looksAerial || guessView(vehicles))) || cal.view || "angled";
     try {
       const result = autoMapLot({
         image: imagePixels(el),

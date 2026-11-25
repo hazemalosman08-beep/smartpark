@@ -89,7 +89,9 @@ export function setDetectorModel(model) {
 export function filterLookalikes(boxes, { overhead = false } = {}) {
   const alike = boxes.filter((b) => b.lookalike && b.score >= 0.2);
   const useAlike = overhead || alike.length >= 3;
-  let kept = boxes.filter((b) => !b.lookalike || (useAlike && b.score >= 0.12));
+  // With aerial-model cars present, street-model look-alikes are not needed.
+  const hasAerial = boxes.some((b) => b.aerial);
+  let kept = boxes.filter((b) => !b.lookalike || (!hasAerial && useAlike && b.score >= 0.12));
   if (useAlike && kept.length >= 5) {
     const areas = kept.filter((b) => b.score >= 0.25).map((b) => b.w * b.h).sort((a, b) => a - b);
     const median = areas[Math.floor(areas.length / 2)] || 0;
@@ -98,7 +100,11 @@ export function filterLookalikes(boxes, { overhead = false } = {}) {
   return kept;
 }
 
-export async function detectVehiclesLocal(source, { tiles = true, hires = false, minScore = 0.12, overhead = false } = {}) {
+/**
+ * aerial: false | true | "only" — also run (or only run) the aerial-photo model,
+ * which recognises cars seen from straight above.
+ */
+export async function detectVehiclesLocal(source, { tiles = true, hires = false, minScore = 0.12, overhead = false, aerial = false } = {}) {
   const width = source.videoWidth || source.naturalWidth || source.width;
   const height = source.videoHeight || source.naturalHeight || source.height;
   if (!width || !height) return { boxes: [], ms: 0, backend: status.backend, tiled: false };
@@ -107,6 +113,6 @@ export async function detectVehiclesLocal(source, { tiles = true, hires = false,
   if (status.state === "idle") setStatus({ state: "loading" });
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve: (msg) => resolve({ ...msg, boxes: filterLookalikes(msg.boxes, { overhead }) }), reject });
-    ensureWorker().postMessage({ type: "detect", id, bitmap, tiles, hires, minScore, modelUrl: modelUrl() }, [bitmap]);
+    ensureWorker().postMessage({ type: "detect", id, bitmap, tiles, hires, minScore, aerial, aerialUrl: new URL(`${import.meta.env?.BASE_URL || "/"}models/yolo11s-aerial.onnx`, window.location.href).toString(), modelUrl: modelUrl() }, [bitmap]);
   });
 }

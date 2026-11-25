@@ -57,6 +57,9 @@ How detection works:
 - **Detector** (`src/lib/vision/detector.worker.js`): YOLO11 (`public/models/yolo11s.onnx`, or the faster
   `yolo11n.onnx`) on ONNX Runtime Web, using WebGPU when available and WebAssembly otherwise. A "small-car boost"
   also scans four zoomed tiles.
+- **Aerial model** (`public/models/yolo11s-aerial.onnx`, YOLO11-OBB trained on aerial photos): finds cars
+  seen from straight above, which street-photo models miss. Used on every photo, and on live video when the
+  camera view is Overhead. On a drone photo it found 45 cars where the street model found 0–2.
 - **Tracker** (`src/lib/vision/tracker.js`): Kalman prediction plus two-stage optimal matching (ByteTrack style).
   A new car must be seen a few times before it gets an ID.
 - **Stalls** (`src/lib/vision/lot.js`): perspective-correct stall rows, one car per stall, and a short hold before
