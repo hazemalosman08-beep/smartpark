@@ -1,6 +1,6 @@
 // One-click lot mapping: painted stall lines + parked cars -> stalls, aisles and
 // an entrance, ready for counting and for the top-down plan.
-import { findStallsCombined as findStalls } from "./stallFinder.js";
+import { findStallsCombined as findStalls, stallAppearance } from "./stallFinder.js";
 import { dedupeStalls, nextRowLetter, stallsFromVehicles } from "./lot.js";
 import { rectify } from "./autoTilt.js";
 import { polygonArea, polygonOverlapArea } from "./geometry.js";
@@ -44,7 +44,7 @@ export function autoMapLot({ image, vehicles = [], view = "overhead", ground = n
     const row = rename.get(s.row);
     stalls.push({ ...s, row, label: `${row}${s.index}`, id: `${row}${s.index}-${Math.random().toString(36).slice(2, 7)}`, auto: true });
   }
-  const painted = stalls.length - keepStalls.length;
+  stalls = dropNonPavementRows(image, stalls, vehicles, inside, centre);
   // Cars standing where no painted stall was found (lines hidden under cars).
   const fromCars = stallsFromVehicles(vehicles, view, stalls, { auto: true });
   // Sizes are compared on the ground (far spaces look smaller on a tilted camera).
@@ -62,6 +62,25 @@ export function autoMapLot({ image, vehicles = [], view = "overhead", ground = n
     autoEntrance = { x: best.x, y: Math.min(99, best.y), auto: true };
   }
   return { stalls, lanes, entrance: autoEntrance, stats: { painted: stalls.filter((x) => x.auto && !x.learned).length, fromCars: stalls.filter((x) => x.learned).length, rows: found.debug.rows } };
+}
+
+// A painted "row" where every space looks occupied but not one car was found
+// in any of them is not parking pavement: a roof, a facade, a dark awning.
+function dropNonPavementRows(image, stalls, vehicles, inside, centre) {
+  let looks;
+  try { looks = stallAppearance(image, stalls); } catch { return stalls; }
+  if (!looks.size) return stalls;
+  const rows = new Map();
+  for (const s of stalls) if (s.auto && !s.learned) (rows.get(s.row) || rows.set(s.row, []).get(s.row)).push(s);
+  const drop = new Set();
+  for (const [row, list] of rows) {
+    if (list.length < 2) continue;
+    const carIn = list.some((s) => vehicles.some((v) => inside({ x: v.x + v.w / 2, y: v.y + v.h / 2 }, s.poly) || inside(centre(s.poly), [{ x: v.x, y: v.y }, { x: v.x + v.w, y: v.y }, { x: v.x + v.w, y: v.y + v.h }, { x: v.x, y: v.y + v.h }])));
+    if (carIn) continue;
+    const dark = list.filter((s) => (looks.get(s.id) ?? 0) >= 1.4).length;
+    if (dark >= list.length * 0.75) drop.add(row);
+  }
+  return drop.size ? stalls.filter((s) => !drop.has(s.row) || !s.auto) : stalls;
 }
 
 // A "space" far smaller or thinner than the lot's normal spaces is a piece of

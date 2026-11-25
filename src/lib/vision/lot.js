@@ -287,7 +287,10 @@ export function createOccupancy({ timeConstantMs = 1800, onAt = 0.62, offAt = 0.
       const looks = appearance?.get(stall.id);
       // A space that clearly does not look like empty pavement counts as taken
       // even without a detected car (cars under trees, very dark cars).
-      if (looks !== undefined && looks >= 1.4 && !hit) target = Math.max(target, 0.85);
+      // Next to a space with a detected car, overhang and its shadow spill
+      // over: stronger evidence is needed there.
+      const besideCar = looks !== undefined && !hit && stall.row && stalls.some((o) => o.row === stall.row && Math.abs((o.index ?? NaN) - (stall.index ?? NaN)) === 1 && assigned.get(o.id));
+      if (looks !== undefined && looks >= (besideCar ? 2 : 1.4) && !hit) target = Math.max(target, 0.85);
       const prev = state.get(stall.id) || { evidence: still ? target : 0, occupied: false, since: now };
       const evidence = prev.evidence + (target - prev.evidence) * alpha;
       let occupied = prev.occupied;

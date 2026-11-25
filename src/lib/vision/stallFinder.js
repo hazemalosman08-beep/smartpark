@@ -802,7 +802,67 @@ export function findStallsByRows(image, { vehicles = [] } = {}) {
     }
     const bands = new Map();
     divs.forEach((d, i) => { const r = find(i); if (!bands.has(r)) bands.set(r, []); bands.get(r).push(d); });
+    // Rows inside a band, from paint coverage: at each depth step, how many of
+    // the band's dividers have paint there. A row is a stretch where many do;
+    // an aisle is where none do. A long painted line across the band (the line
+    // between the two halves of a double row) also ends a row. This holds up
+    // when worn paint breaks every divider into short pieces.
+    const Lall = median(divs.map((d) => d.len));
+    const rowLines = all.filter((sg) => angleDiff(sg.angle, (dir + 90) % 180) <= 10 && sg.len >= Lall * 1.5).map((sg) => {
+      const u0 = sg.p.x * px + sg.p.y * py, u1 = sg.q.x * px + sg.q.y * py;
+      return { v: mid(sg).x * ux + mid(sg).y * uy, u0: Math.min(u0, u1), u1: Math.max(u0, u1) };
+    });
+    const split = [];
     for (const band of bands.values()) {
+      if (band.length < 3) continue;
+      // Pieces with the same position along the row are one divider.
+      const sorted = [...band].sort((a2, b2) => a2.u - b2.u);
+      const dividers = [];
+      for (const d of sorted) {
+        const last = dividers[dividers.length - 1];
+        if (last && d.u - last.u < Lall * 0.15) { last.pieces.push(d); last.u = (last.u * (last.pieces.length - 1) + d.u) / last.pieces.length; } else dividers.push({ u: d.u, pieces: [d] });
+      }
+      if (dividers.length < 3) continue;
+      const vmin = Math.floor(Math.min(...band.map((d) => d.v0))), vmax = Math.ceil(Math.max(...band.map((d) => d.v1)));
+      const cover = new Float32Array(vmax - vmin + 1);
+      for (const dv of dividers) {
+        const hit = new Uint8Array(cover.length);
+        for (const pc of dv.pieces) for (let v = Math.max(vmin, Math.floor(pc.v0)); v <= Math.min(vmax, Math.ceil(pc.v1)); v += 1) hit[v - vmin] = 1;
+        hit.forEach((h, k) => { cover[k] += h; });
+      }
+      // Lines across the band cut the coverage there.
+      const bu0 = dividers[0].u, bu1 = dividers[dividers.length - 1].u;
+      const lineHere = new Float32Array(cover.length);
+      for (const l of rowLines) {
+        const k = Math.round(l.v) - vmin;
+        if (k < 0 || k >= cover.length) continue;
+        lineHere[k] += Math.max(0, Math.min(l.u1, bu1) - Math.max(l.u0, bu0));
+      }
+      const need = Math.max(2, dividers.length * 0.35);
+      const runs = [];
+      let start = -1;
+      for (let k = 0; k <= cover.length; k += 1) {
+        const lineCut = k < cover.length && (lineHere[k] + (lineHere[k - 1] || 0) + (lineHere[k + 1] || 0)) > (bu1 - bu0) * 0.4;
+        const on = k < cover.length && cover[k] >= need && !lineCut;
+        if (on && start < 0) start = k;
+        if (!on && start >= 0) { runs.push([start + vmin, k - 1 + vmin]); start = -1; }
+      }
+      for (const [r0, r1] of runs) {
+        if (r1 - r0 < Lall * 0.6) continue;
+        const members2 = band.filter((d) => Math.min(d.v1, r1) - Math.max(d.v0, r0) > (r1 - r0) * 0.2);
+        if (members2.length < 3) continue;
+        // Per divider position, one representative piece spanning the row.
+        const reps = [];
+        for (const dv of dividers) {
+          const inRow = dv.pieces.filter((d) => members2.includes(d));
+          if (inRow.length) reps.push({ u: dv.u, v0: r0, v1: r1, len: r1 - r0 });
+        }
+        const sub = reps;
+        sub.v0 = r0; sub.v1 = r1;
+        split.push(sub);
+      }
+    }
+    for (const band of split) {
       if (band.length < 3) continue;
       const L = median(band.map((d) => d.len));
       band.sort((a, b) => a.u - b.u);
@@ -819,12 +879,23 @@ export function findStallsByRows(image, { vehicles = [] } = {}) {
       const sorted = [...gaps].sort((a, b) => a - b);
       const pitch = median(sorted.slice(0, Math.max(2, Math.ceil(sorted.length * 0.6))));
       // Depth from the ends most dividers agree on.
-      const v0 = median(uniq.map((d) => d.v0)), v1 = median(uniq.map((d) => d.v1));
+      // Depth: the band's own extent when it was cut from paint coverage,
+      // otherwise where most dividers start and end.
+      const v0 = band.v0 ?? median(uniq.map((d) => d.v0)), v1 = band.v1 ?? median(uniq.map((d) => d.v1));
       const inBand = (c) => {
         const v = c.x * ux + c.y * uy;
         return v > v0 - (v1 - v0) * 0.1 && v < v1 + (v1 - v0) * 0.1;
       };
       const carU = carsPx.filter(inBand).map((c) => c.x * px + c.y * py);
+      // Share of the stretch a..b (along the row) covered by painted lines that
+      // run along this row (its front, back or centre line).
+      const rowLineCover = (a, b, rv0, rv1) => {
+        const margin = (rv1 - rv0) * 0.15;
+        const spans = rowLines.filter((l) => l.v >= rv0 - margin && l.v <= rv1 + margin).map((l) => [Math.max(a, l.u0), Math.min(b, l.u1)]).filter(([x, y]) => y > x).sort((x, y) => x[0] - y[0]);
+        let covered = 0, end = a;
+        for (const [x, y] of spans) { if (y <= end) continue; covered += y - Math.max(x, end); end = y; }
+        return b > a ? covered / (b - a) : 0;
+      };
       // Runs of neighbouring dividers at the row's spacing.
       let run = [uniq[0].u];
       const runs = [];
@@ -833,7 +904,10 @@ export function findStallsByRows(image, { vehicles = [] } = {}) {
         const ratio = (b - a) / pitch;
         const k = Math.round(ratio);
         const carInside = carU.some((u) => u > a && u < b);
-        const ok = k >= 1 && Math.abs(ratio - k) < 0.3 && (k <= 2 || (k === 3 && carInside));
+        // A wider gap is still part of the row when a painted line runs along
+        // the row across it (faint dividers); a road or island has no such line.
+        const lineAcross = k <= 10 && rowLineCover(a, b, v0, v1) >= 0.75;
+        const ok = k >= 1 && Math.abs(ratio - k) < 0.3 && (k <= 2 || (k === 3 && carInside) || lineAcross);
         if (ok) {
           for (let s = 1; s < k; s += 1) run.push(a + ((b - a) * s) / k);
           run.push(b);
@@ -849,6 +923,18 @@ export function findStallsByRows(image, { vehicles = [] } = {}) {
           const lo = r[0], hi = r[r.length - 1];
           if (carU.some((u) => u < lo && u > lo - pitch * 1.05)) r = [lo - pitch, ...r];
           if (carU.some((u) => u > hi && u < hi + pitch * 1.05)) r = [...r, hi + pitch];
+        }
+        // The row's painted line carries on past the last divider found: the
+        // dividers there are too faint, so continue the row along the line
+        // (a few spaces at most).
+        // It stops at an island: grass or earth ends the row (a line on the far
+        // side of the island belongs to the lane, e.g. beside an arrow).
+        const rr = { ux, uy, px, py };
+        let goLo = true, goHi = true;
+        for (let n = 0; n < 3; n += 1) {
+          const lo = r[0], hi = r[r.length - 1];
+          if (goLo && rowLineCover(lo - pitch, lo, v0, v1) >= 0.9 && planted(image, lo - pitch, lo, v0, v1, rr) <= 0.3) r = [lo - pitch, ...r]; else goLo = false;
+          if (goHi && rowLineCover(hi, hi + pitch, v0, v1) >= 0.9 && planted(image, hi, hi + pitch, v0, v1, rr) <= 0.3) r = [...r, hi + pitch]; else goHi = false;
         }
         if (r.length < 3) continue; // fewer than two spaces: road markings, kerbs
         rows.push({ us: r, v0, v1, ux, uy, px, py, pitch, L });
