@@ -47,6 +47,7 @@ export function classifyScene(data, W, H) {
     else if (g > r + 6 && g > b + 6) cls[i] = L < 70 ? 3 : 2;
     else if (r > b + 22 && g > b + 8 && r - g < 45 && sat > 0.18) cls[i] = 4;
     else if (sat < 0.16 || (b > r && sat < 0.3)) cls[i] = L > 175 ? 5 : 1;
+    else if (b > r + 40 && b > g + 15) cls[i] = 5; // blue paint (accessible spaces)
     else cls[i] = 6;
   }
   // Tree canopy is rough (leaves, gaps, shade); lawn is smooth.
