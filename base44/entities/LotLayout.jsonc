@@ -1,0 +1,61 @@
+{
+  "name": "LotLayout",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Name of the saved lot layout, e.g. Main lot"
+    },
+    "layout": {
+      "type": "string",
+      "description": "JSON of the mapped lot: spots, lanes, camera zones and the entrance point"
+    },
+    "spot_count": {
+      "type": "number",
+      "description": "How many parking spaces the layout holds"
+    },
+    "zone_count": {
+      "type": "number",
+      "description": "How many camera zones the layout holds"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "rls": {
+    "read": {},
+    "create": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "user_condition": {
+            "role": "user"
+          }
+        }
+      ]
+    },
+    "update": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "user_condition": {
+            "role": "user"
+          }
+        }
+      ]
+    },
+    "delete": {
+      "user_condition": {
+        "role": "admin"
+      }
+    }
+  }
+}

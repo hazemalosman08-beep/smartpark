@@ -1,0 +1,43 @@
+{
+  "name": "LotInfo",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Parking lot name shown to drivers"
+    },
+    "address": {
+      "type": "string",
+      "description": "Street address used for turn-by-turn directions"
+    },
+    "latitude": {
+      "type": "number",
+      "description": "Optional latitude for a precise directions pin"
+    },
+    "longitude": {
+      "type": "number",
+      "description": "Optional longitude for a precise directions pin"
+    }
+  },
+  "required": [
+    "address"
+  ],
+  "rls": {
+    "read": {},
+    "create": {
+      "user_condition": {
+        "role": "admin"
+      }
+    },
+    "update": {
+      "user_condition": {
+        "role": "admin"
+      }
+    },
+    "delete": {
+      "user_condition": {
+        "role": "admin"
+      }
+    }
+  }
+}

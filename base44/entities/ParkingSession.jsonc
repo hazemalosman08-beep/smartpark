@@ -1,0 +1,145 @@
+{
+  "name": "ParkingSession",
+  "type": "object",
+  "properties": {
+    "vehicle_id": {
+      "type": "string",
+      "description": "Temporary virtual vehicle ID assigned on entry, e.g. SP-1042"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "closed"
+      ],
+      "enumColors": [
+        "green",
+        "gray"
+      ],
+      "default": "active",
+      "description": "Active while the vehicle is on site"
+    },
+    "entry_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the vehicle was first observed entering"
+    },
+    "exit_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the session was closed"
+    },
+    "spot_label": {
+      "type": "string",
+      "description": "Assigned or last observed parking space, e.g. A3"
+    },
+    "zone": {
+      "type": "string",
+      "description": "Monitored area the vehicle was last seen in"
+    },
+    "location_status": {
+      "type": "string",
+      "enum": [
+        "confirmed",
+        "estimated",
+        "unknown"
+      ],
+      "enumColors": [
+        "green",
+        "yellow",
+        "gray"
+      ],
+      "default": "unknown",
+      "description": "Confirmed by an observation, estimated by guidance, or unknown"
+    },
+    "confidence": {
+      "type": "number",
+      "description": "0-1 confidence for the last known location"
+    },
+    "last_seen_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of the most recent observation"
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "simulation",
+        "camera"
+      ],
+      "enumColors": [
+        "purple",
+        "blue"
+      ],
+      "default": "simulation",
+      "description": "Where the session data came from"
+    },
+    "camera": {
+      "type": "string",
+      "description": "Camera that produced the most recent observation"
+    },
+    "position_x": {
+      "type": "number",
+      "description": "Last known horizontal position in the camera frame, 0-100"
+    },
+    "position_y": {
+      "type": "number",
+      "description": "Last known vertical position in the camera frame, 0-100"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "vehicle_id"
+  ],
+  "rls": {
+    "read": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "user_condition": {
+            "role": "user"
+          }
+        }
+      ]
+    },
+    "create": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "user_condition": {
+            "role": "user"
+          }
+        }
+      ]
+    },
+    "update": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "user_condition": {
+            "role": "user"
+          }
+        }
+      ]
+    },
+    "delete": {
+      "user_condition": {
+        "role": "admin"
+      }
+    }
+  }
+}

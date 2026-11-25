@@ -1,0 +1,131 @@
+{
+  "name": "VehicleEvent",
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "description": "Parking session this observation belongs to"
+    },
+    "vehicle_id": {
+      "type": "string",
+      "description": "Temporary virtual vehicle ID, e.g. SP-1042"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "entry",
+        "move",
+        "parked",
+        "exit"
+      ],
+      "enumColors": [
+        "blue",
+        "yellow",
+        "green",
+        "gray"
+      ],
+      "description": "What the observation recorded"
+    },
+    "zone": {
+      "type": "string",
+      "description": "Monitored area the observation happened in"
+    },
+    "spot_label": {
+      "type": "string",
+      "description": "Parking space tied to the observation, if any"
+    },
+    "location_status": {
+      "type": "string",
+      "enum": [
+        "confirmed",
+        "estimated",
+        "unknown"
+      ],
+      "enumColors": [
+        "green",
+        "yellow",
+        "gray"
+      ],
+      "default": "unknown"
+    },
+    "confidence": {
+      "type": "number",
+      "description": "0-1 confidence of the observation"
+    },
+    "camera": {
+      "type": "string",
+      "description": "Camera that produced the observation"
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "simulation",
+        "camera"
+      ],
+      "enumColors": [
+        "purple",
+        "blue"
+      ],
+      "default": "simulation"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "position_x": {
+      "type": "number",
+      "description": "Horizontal position in the camera frame at this observation, 0-100"
+    },
+    "position_y": {
+      "type": "number",
+      "description": "Vertical position in the camera frame at this observation, 0-100"
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "vehicle_id",
+    "type"
+  ],
+  "rls": {
+    "read": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "user_condition": {
+            "role": "user"
+          }
+        }
+      ]
+    },
+    "create": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "user_condition": {
+            "role": "user"
+          }
+        }
+      ]
+    },
+    "update": {
+      "user_condition": {
+        "role": "admin"
+      }
+    },
+    "delete": {
+      "user_condition": {
+        "role": "admin"
+      }
+    }
+  }
+}
