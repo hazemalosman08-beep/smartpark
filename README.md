@@ -78,3 +78,11 @@ Support: [https://app.base44.com/support](https://app.base44.com/support)
 
 Tests: `npm test` (unit tests). For a browser check, run `npx vite --config vite.test.config.js --port 5199`,
 then `node test/e2e/ui.e2e.cjs`.
+
+## Installing as an app
+
+SmartPark is an installable web app (PWA): `public/smartpark.webmanifest`, `public/sw.js` and `public/icons/`.
+After publishing, open the site and either click **Install app** in the top bar (Chrome, Edge, Android) or, on
+iPhone/iPad, use Safari's Share → **Add to Home Screen**. The detection model is kept on the device after the
+first download. Pages are always loaded fresh when online, so new publishes show up right away. To force
+returning visitors to refetch the cached model and built files, change `VERSION` in `public/sw.js`.

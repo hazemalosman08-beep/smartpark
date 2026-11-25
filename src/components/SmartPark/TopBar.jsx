@@ -1,6 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { Camera, Map, Navigation } from "lucide-react";
+import InstallButton from "@/components/SmartPark/InstallButton";
 
 const TABS = [
   { key: "camera", label: "Camera", icon: Camera, hint: "Detect & map" },
@@ -27,9 +28,11 @@ export default function TopBar({ tab, setTab, status }) {
         ))}
       </nav>
       {status && <span className="text-[11px] text-neutral-400">{status}</span>}
+      <div className="ml-auto" />
+      <InstallButton />
       <Link
         to="/find"
-        className="ml-auto flex items-center gap-1.5 rounded-md border border-green-500/60 px-3 py-1.5 text-xs text-green-300 hover:bg-green-500/10"
+        className="flex items-center gap-1.5 rounded-md border border-green-500/60 px-3 py-1.5 text-xs text-green-300 hover:bg-green-500/10"
       >
         <Navigation className="h-3.5 w-3.5" /> Find my car
       </Link>

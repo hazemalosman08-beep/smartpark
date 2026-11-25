@@ -17,6 +17,7 @@ export const base44 = {
   entities: new Proxy({}, { get: (_, name) => entity(name) }),
   functions: { invoke: async () => { throw new Error("Cloud functions are not available in the test harness"); } },
   integrations: { Core: {} },
-  auth: { me: async () => ({ id: "u1", role: "admin" }) },
+  auth: { me: async () => ({ id: "u1", role: "admin" }), redirectToLogin: () => {}, logout: () => {} },
+  app: { getPublicSettings: async () => ({ id: "test", public_settings: {} }) },
 };
 window.__base44Store = store;
