@@ -215,10 +215,13 @@ export function deriveLot(calibration) {
   // Real-world scale. Without a measured lot, painted spaces are about 2.5 m
   // wide: that is a far better yardstick than an assumed frame width.
   let scaleSource = quad?.length === 4 && c.ground?.width > 0 ? (c.ground.auto ? "estimated" : "measured") : "assumed";
-  if (scaleSource === "assumed" && stalls.length >= 3) {
+  // An automatic (estimated) straightening is checked the same way: if it
+  // makes spaces narrower than 2 m or wider than 3.2 m, its size is wrong.
+  if (scaleSource !== "measured" && stalls.length >= 3) {
     const widths = stalls.map((st) => dist(st.poly[0], st.poly[1])).filter((w) => w > 0).sort((a, b) => a - b);
     const w = widths[Math.floor(widths.length / 2)];
-    if (w > 0) { metersPerUnit = 2.5 / w; scaleSource = "estimated"; }
+    const metres = w * metersPerUnit;
+    if (w > 0 && (scaleSource === "assumed" || metres < 2 || metres > 3.2)) { metersPerUnit = 2.5 / w; scaleSource = "estimated"; }
   }
 
   // Bounds: the ground rectangle (grown to include anything drawn outside it).

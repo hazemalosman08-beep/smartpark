@@ -125,8 +125,7 @@ export function sceneFeatures(scene, rect, stalls = []) {
   const surfaceAt = (p) => { const k = cellOf(p); return k < 0 ? null : SURF[blocked[k]]; };
   const obstacle = (p) => {
     const k = cellOf(p);
-    // Raised walkways (kerbed) are not driven on either; crossings are.
-    return k >= 0 && (blocked[k] === 1 || blocked[k] === 2 || (blocked[k] === 3 && walkways.raised)) && !inStall(p);
+    return k >= 0 && (blocked[k] === 1 || blocked[k] === 2) && !inStall(p);
   };
 
   return { islands, buildings, trees, walkways, crossings, obstacle, surfaceAt, stallW, cellArea };
@@ -289,8 +288,6 @@ function pedestrianAreas(scene, g) {
     for (const k of cells) mask[k] = 1;
     out.walkways.push(...shapes(mask, gw, gh, 0.5, toLot).filter((poly) => polygonArea(poly.outer) >= stallArea * 0.5));
   }
-  // A walkway between rows of spaces is a kerbed, raised strip.
-  out.walkways.raised = true;
 
   // Crossings: painted marks grouped by direction and spacing.
   const stallPx = stallW * pxPerUnit;
