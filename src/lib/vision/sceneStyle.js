@@ -48,6 +48,7 @@ export function classifyScene(data, W, H) {
     else if (r > b + 22 && g > b + 8 && r - g < 45 && sat > 0.18) cls[i] = 4;
     else if (sat < 0.16 || (b > r && sat < 0.3)) cls[i] = L > 175 ? 5 : 1;
     else if (b > r + 40 && b > g + 15) cls[i] = 5; // blue paint (accessible spaces)
+    else if (r > 150 && g > 120 && b < r * 0.55 && Math.abs(r - g) < 70) cls[i] = 5; // yellow paint (crossings, kerbs)
     else cls[i] = 6;
   }
   // Tree canopy is rough (leaves, gaps, shade); lawn is smooth.
@@ -185,7 +186,7 @@ export async function buildScene(url, { maxSide = 900, spaces = [] } = {}) {
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
     urls[palette] = URL.createObjectURL(blob);
   }
-  return { W, H, cls: classes.cls, ...urls };
+  return { W, H, cls: classes.cls, lum: classes.lum, ...urls };
 }
 
 export function releaseScene(scene) {

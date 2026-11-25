@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { recommendStall, routeToStall, walkDistance } from "@/lib/vision/lot";
 import { buildManeuvers, routeSummary } from "@/lib/vision/navigation";
+import { WALK_SPEED_MPS, walkPlanner } from "@/lib/vision/walking";
 
 const MY_CAR_KEY = "smartpark.myCar";
 
@@ -19,11 +20,17 @@ function saveMyCar(value) {
  *                  when the driver chose it; without it there is no live
  *                  position and the route starts at the entrance.
  */
-export default function useGuidance({ lot, graph, fromEntrance, statuses, tracks = [], obstacle = null, destinationId = null, accessible = false, driverId = null }) {
+export default function useGuidance({ lot, graph, fromEntrance, statuses, tracks = [], features = null, destinationId = null, accessible = false, driverId = null }) {
+  const obstacle = features?.obstacle || null;
+  // The walk from each space to the chosen building, along walkways and
+  // crossings read from the picture; it ranks the spaces.
   const navLot = useMemo(() => {
     const dest = lot.buildings?.find((b) => b.id === destinationId) || lot.buildings?.[0] || null;
-    return dest ? { ...lot, building: { x: dest.x, y: dest.y }, destination: dest } : { ...lot, destination: null };
-  }, [lot, destinationId]);
+    if (!dest) return { ...lot, destination: null, walker: null };
+    let walker = null;
+    try { walker = walkPlanner(lot, features, dest); } catch { walker = null; }
+    return { ...lot, building: { x: dest.x, y: dest.y }, destination: dest, walker, walkDistanceFor: walker?.distanceFor };
+  }, [lot, destinationId, features]);
 
   // The camera can lose a car for a moment (another car in front, a missed
   // frame): its last position is kept for a while, marked as not current.
@@ -75,12 +82,24 @@ export default function useGuidance({ lot, graph, fromEntrance, statuses, tracks
 
   const maneuvers = useMemo(() => buildManeuvers(route, target, lot.metersPerUnit), [route, target, lot.metersPerUnit]);
   const summary = useMemo(() => routeSummary(route, lot.metersPerUnit), [route, lot.metersPerUnit]);
-  const walk = target && navLot.building ? Math.max(1, Math.round(walkDistance(navLot, target) * lot.metersPerUnit)) : null;
 
   // Arrival: the guided car stands still in a space (seen by the camera).
   const parkedIn = driver && driver.motion !== "moving" && driver.spot_label
     ? lot.stalls.find((s) => s.label === driver.spot_label) || null : null;
   const arrived = Boolean(parkedIn && target && parkedIn.id === target.id);
+  // The walk from where the car is (or will be) parked, not from the entrance.
+  const walkFrom = parkedIn || target;
+  const walkInfo = useMemo(() => {
+    if (!walkFrom || !navLot.building) return null;
+    const r = navLot.walker?.routeFrom(walkFrom.centroid);
+    const units = r ? r.length : walkDistance(navLot, walkFrom);
+    const meters = Math.max(1, Math.round(units * lot.metersPerUnit));
+    return {
+      from: walkFrom, meters, seconds: meters / WALK_SPEED_MPS,
+      path: r?.path || [walkFrom.centroid, navLot.building], walkway: Boolean(r?.walkway), crossing: Boolean(r?.crossing), planned: Boolean(r),
+    };
+  }, [walkFrom, navLot, lot.metersPerUnit]);
+  const walk = walkInfo?.meters ?? null;
   const saved = useRef(null);
   useEffect(() => {
     if (!parkedIn || !driver) return;
@@ -90,5 +109,5 @@ export default function useGuidance({ lot, graph, fromEntrance, statuses, tracks
     saveMyCar({ vehicle_id: driver.vehicle_id, spot_label: parkedIn.label, at: new Date().toISOString() });
   }, [parkedIn, driver]);
 
-  return { navLot, target, route, maneuvers, summary, walk, driver, parkedIn, arrived, notice };
+  return { navLot, target, route, maneuvers, summary, walk, walkInfo, driver, parkedIn, arrived, notice };
 }

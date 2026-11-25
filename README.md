@@ -27,6 +27,13 @@ A parking-lot camera app that runs entirely in the browser. No backend and no ac
     it is, a new space is given if yours is taken, and when the camera sees it park the space is saved for
     Find my car. Without a live position the guide plays a labelled *route preview* from the entrance.
   - The screen always says where its data comes from: live camera, photo snapshot or simulated.
+  - **Walking:** the walk is measured from the space you park in (or are sent to), not from the entrance:
+    a walking route to the chosen building along walkways and crossings, between parked cars, around
+    buildings and planted islands. It ranks the spaces (shortest real walk first), shows metres and time
+    (about 1.3 m/s), and is drawn as an amber footstep line in 3D and 2D.
+  - **Pedestrian areas read from the picture:** walkways and sidewalks (straight strips of concrete lighter
+    than the lot's pavement, drawn raised in 3D) and crossings (four or more parallel painted bars or
+    hatching outside the spaces, white or yellow).
 - **Building:** on the Camera tab, the Building tool marks where drivers walk to; each extra click adds another
   destination drivers can choose. The guide sends each driver to the free space with the shortest walk.
   **Space type** (More tools) marks spaces accessible or reserved.

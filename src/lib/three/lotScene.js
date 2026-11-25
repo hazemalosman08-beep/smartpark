@@ -17,6 +17,7 @@ export const THEMES = {
     trunk: 0x4b3a2a, canopy: 0x2c6a45,
     free: 0x22c55e, taken: 0xef4444, reserved: 0x3b82f6, unknown: 0x64748b, accessible: 0x3b82f6,
     route: 0x3b82f6, routeGlow: 0x60a5fa, target: 0x4ade80, ghost: 0x60a5fa,
+    walkTop: 0x6b7480, walkSide: 0x9aa3ad, crossing: 0xffffff, walk: "#fbbf24",
     sky: 0xbfd4ff, skyGround: 0x1a1f24, hemi: 0.95, sun: 1.15,
     labelBg: "rgba(15,23,42,0.92)", labelFg: "#e2e8f0",
   },
@@ -26,6 +27,7 @@ export const THEMES = {
     trunk: 0x8a6b4a, canopy: 0x5fae6a,
     free: 0x16a34a, taken: 0xdc2626, reserved: 0x2563eb, unknown: 0x94a3b8, accessible: 0x2563eb,
     route: 0x2563eb, routeGlow: 0x3b82f6, target: 0x16a34a, ghost: 0x2563eb,
+    walkTop: 0xeef0f2, walkSide: 0xb8bfc6, crossing: 0xffffff, walk: "#d97706",
     sky: 0xffffff, skyGround: 0x9aa3ad, hemi: 1.0, sun: 1.0,
     labelBg: "rgba(255,255,255,0.95)", labelFg: "#0f172a",
   },
@@ -33,6 +35,7 @@ export const THEMES = {
 
 const BUILDING_HEIGHT = 9; // m: three storeys; the picture gives no heights
 const CURB_HEIGHT = 0.15; // m
+const WALKWAY_HEIGHT = 0.12; // m
 const CAR = { length: 4.6, width: 1.85 };
 const MAX_CARS = 400;
 const LABEL = 0.036; // label height, share of the screen height
@@ -54,7 +57,7 @@ export class LotScene {
     this.themeName = "dark";
     this.mode = "bird";
     this.groups = {};
-    for (const name of ["static", "stalls", "cars", "route", "marker", "labels"]) {
+    for (const name of ["static", "stalls", "cars", "route", "walk", "marker", "labels"]) {
       this.groups[name] = new THREE.Group();
       this.scene.add(this.groups[name]);
     }
@@ -122,6 +125,7 @@ export class LotScene {
     this.buildStatic();
     this.buildStalls();
     this.buildRoute();
+    this.buildWalk();
     this.buildMarker();
     this.rebuildCars();
   }
@@ -171,6 +175,28 @@ export class LotScene {
   }
 
   setEgo(pose) { this.data.ego = pose; }
+
+  /** Walking route (lot units) from the parked space to the building. */
+  setWalk(path) {
+    const key = (path || []).map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(";");
+    if (key === this.walkKey) return;
+    this.walkKey = key;
+    this.data.walk = path;
+    this.buildWalk();
+  }
+
+  buildWalk() {
+    this.clear("walk");
+    this.walkTexture = null;
+    const path = this.data.walk;
+    if (!path || path.length < 2) return;
+    const pts = roundCorners(path.map((p) => new THREE.Vector2(p.x * this.m, p.y * this.m)), 1.5);
+    const tex = dotsTexture(this.theme.walk);
+    this.walkTexture = tex;
+    const mesh = new THREE.Mesh(ribbon(pts, 0.7, 0.2), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+    mesh.renderOrder = 8;
+    this.groups.walk.add(mesh);
+  }
 
   setMode(mode) {
     this.mode = mode;
@@ -261,6 +287,20 @@ export class LotScene {
         const geo = extrude(poly, CURB_HEIGHT, this.m);
         if (geo) g.add(new THREE.Mesh(geo, mats));
       }
+    }
+
+    // Pedestrian areas read from the picture: raised walkways, crossings.
+    if (features?.walkways?.length) {
+      const mats = [new THREE.MeshLambertMaterial({ color: t.walkTop }), new THREE.MeshLambertMaterial({ color: t.walkSide })];
+      for (const poly of features.walkways) {
+        const geo = extrude(poly, WALKWAY_HEIGHT, this.m);
+        if (geo) g.add(new THREE.Mesh(geo, mats));
+      }
+    }
+    for (const c of features?.crossings || []) {
+      const mesh = new THREE.Mesh(quadGeo(c.outer.map((p) => this.W(p, 0.035))), new THREE.MeshBasicMaterial({ color: t.crossing, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }));
+      mesh.renderOrder = 2;
+      g.add(mesh);
     }
 
     // Buildings: footprints found in the picture or drawn by hand. Height is
@@ -564,6 +604,7 @@ export class LotScene {
 
     // Route arrows move; the target pin floats.
     if (this.routeTexture) this.routeTexture.offset.y -= dt * 0.9;
+    if (this.walkTexture) this.walkTexture.offset.y -= dt * 0.35;
     if (this.marker) {
       this.marker.pin.position.y = 1.6 + Math.sin(time * 2.2) * 0.25;
       const s = 1 + ((time * 0.8) % 1) * 1.6;
@@ -699,6 +740,23 @@ function chevronTexture(color) {
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Walking route: round dots (footsteps) in the walk colour.
+function dotsTexture(color) {
+  const c = document.createElement("canvas");
+  c.width = 32; c.height = 64;
+  const x = c.getContext("2d");
+  x.fillStyle = color;
+  x.beginPath();
+  x.arc(16, 32, 11, 0, Math.PI * 2);
+  x.fill();
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1, 3);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }

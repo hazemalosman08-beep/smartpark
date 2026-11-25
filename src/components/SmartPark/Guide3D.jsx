@@ -70,6 +70,8 @@ export default function Guide3D({ lot, features, scene, rect, statuses, tracks =
   useEffect(() => {
     engine.current?.setRoute(route || [], target || null, { live });
   }, [route, target, live]);
+  const walkPath = guidance?.walkInfo?.path || null;
+  useEffect(() => { engine.current?.setWalk(walkPath); }, [walkPath]);
   const driver = guidance?.driver;
   useEffect(() => {
     if (!driver?.ground) { engine.current?.setEgo(null); return; }

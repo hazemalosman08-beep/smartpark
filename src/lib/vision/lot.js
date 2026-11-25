@@ -501,7 +501,11 @@ export function driveDistance(lot, graph, stall, from = lot.entrance, distances 
 }
 
 // Walking distance from a stall to the building (straight line, lot units).
-export const walkDistance = (lot, stall) => (lot.building ? dist(stall.centroid, lot.building) : null);
+// With a walking planner (walking.js) on the lot, the real walk is used.
+export const walkDistance = (lot, stall) => {
+  if (!lot.building) return null;
+  return lot.walkDistanceFor ? lot.walkDistanceFor(stall) : dist(stall.centroid, lot.building);
+};
 
 // How good a stall is for a driver: with a building set, the shortest walk to
 // it wins (people care about walking more than about a few metres of driving);

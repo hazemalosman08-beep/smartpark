@@ -42,12 +42,13 @@ export default function DriverView({ lot, graph, fromEntrance, statuses, tracks 
   useEffect(() => savePref("smartpark.guide.view", view), [view]);
   useEffect(() => savePref("smartpark.guide.theme", theme), [theme]);
 
-  const obstacle = features?.obstacle || null;
-  const g = useGuidance({ lot, graph, fromEntrance, statuses, tracks, obstacle, destinationId, accessible, driverId });
+  const g = useGuidance({ lot, graph, fromEntrance, statuses, tracks, features, destinationId, accessible, driverId });
   const { total, open, percent: pct } = occupancyCounts(lot.stalls, statuses);
   const full = total > 0 && open === 0;
   const steps = useMemo(() => directionsFor(g.route, g.target, lot.metersPerUnit), [g.route, g.target, lot.metersPerUnit]);
-  const allSteps = g.walk !== null ? [...steps, { kind: "walk", text: `Walk about ${g.walk} m to ${g.navLot.destination?.name || "the building"}` }] : steps;
+  const wk = g.walkInfo;
+  const via = wk?.crossing && wk?.walkway ? " using the walkway and crossing" : wk?.crossing ? " using the crossing" : wk?.walkway ? " along the walkway" : "";
+  const allSteps = wk ? [...steps, { kind: "walk", text: `Walk ${wk.meters} m (${walkTime(wk.seconds)}) to ${g.navLot.destination?.name || "the building"}${via}` }] : steps;
   // Progress along the route: the preview car's, or zero (the route is
   // re-planned from your live position).
   const previewing = !g.driver && dim === "3d";
@@ -110,7 +111,7 @@ export default function DriverView({ lot, graph, fromEntrance, statuses, tracks 
             </Suspense>
           ) : (
             <div className="absolute inset-0 p-1 sm:p-3">
-              <DriverMap lot={g.navLot} statuses={statuses} recommended={g.target} route={g.route} backdrop={backdrop} photo={photo} scene={scene?.dark || null} />
+              <DriverMap lot={g.navLot} statuses={statuses} recommended={g.target} route={g.route} backdrop={backdrop} photo={photo} scene={scene?.dark || null} walkPath={wk?.path} />
             </div>
           )}
 
@@ -166,7 +167,7 @@ export default function DriverView({ lot, graph, fromEntrance, statuses, tracks 
               <span className="rounded-lg bg-emerald-400 px-2.5 py-0.5 text-lg font-extrabold text-emerald-950">{g.target.label}</span>
               <Stat value={formatEta(eta)} label={`arrival${g.driver ? "" : " est."}`} />
               <Stat value={`${Math.round(remaining)} m`} label={`to go${scale}`} />
-              {g.walk !== null && <Stat value={`${g.walk} m`} label="walk" />}
+              {wk && <Stat value={`${wk.meters} m`} label={`walk · ${walkTime(wk.seconds)}`} />}
             </div>
           )}
 
@@ -175,7 +176,7 @@ export default function DriverView({ lot, graph, fromEntrance, statuses, tracks 
           )}
           {g.parkedIn && (
             <div className="absolute inset-x-3 bottom-20 z-20 rounded-xl bg-emerald-400 px-4 py-2.5 text-sm text-emerald-950 shadow-lg sm:left-1/2 sm:right-auto sm:-translate-x-1/2">
-              <b>Parked in {g.parkedIn.label}.</b> Saved for <Link to="/find" className="underline">Find my car</Link> (ID {g.driver?.vehicle_id}).
+              <b>Parked in {g.parkedIn.label}.</b>{wk ? ` Walk ${wk.meters} m (${walkTime(wk.seconds)}) to ${g.navLot.destination?.name || "the building"}.` : ""} Saved for <Link to="/find" className="underline">Find my car</Link> (ID {g.driver?.vehicle_id}).
             </div>
           )}
         </section>
@@ -240,9 +241,15 @@ export default function DriverView({ lot, graph, fromEntrance, statuses, tracks 
               <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-emerald-300/80">Your space</p>
               <div className="mt-2 flex items-center gap-4">
                 <span className="rounded-xl bg-emerald-400 px-4 py-1.5 text-5xl font-extrabold tracking-tight text-emerald-950">{g.target.label}</span>
-                <span className="text-sm text-slate-300">
+                <span className="text-sm leading-snug text-slate-300">
                   {g.target.kind === "accessible" && <span className="mb-1 flex items-center gap-1 text-sky-300"><Accessibility className="h-3.5 w-3.5" /> Accessible</span>}
-                  {Math.round(g.summary.meters)} m<br /><span className="text-slate-500">{g.driver ? "from your car" : "from the entrance"}</span>
+                  {wk ? (
+                    <>
+                      <span className="flex items-center gap-1 text-base font-semibold text-amber-200"><Footprints className="h-4 w-4" /> {wk.meters} m · {walkTime(wk.seconds)}</span>
+                      <span className="text-slate-500">walk from this space</span><br />
+                    </>
+                  ) : null}
+                  <span className="text-slate-400">Drive {Math.round(g.summary.meters)} m</span> <span className="text-slate-500">{g.driver ? "from your car" : "from the entrance"}</span>
                 </span>
               </div>
               <ol className="mt-5 space-y-2.5">
@@ -278,6 +285,8 @@ export default function DriverView({ lot, graph, fromEntrance, statuses, tracks 
     </div>
   );
 }
+
+const walkTime = (seconds) => (seconds < 60 ? `${Math.max(5, Math.round(seconds / 5) * 5)} s` : `${Math.round(seconds / 60)} min`);
 
 function Segmented({ value, onChange, options, dark = true }) {
   return (

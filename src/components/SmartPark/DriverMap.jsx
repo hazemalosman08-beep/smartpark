@@ -117,7 +117,7 @@ function reshape(s, poly) {
 
 // scene: the camera picture redrawn as an illustrated map (sceneStyle.js), in
 // the same place as backdrop; it shows whatever is around the lot.
-export default function DriverMap({ lot, statuses, recommended, route = [], backdrop = null, photo = false, scene = null }) {
+export default function DriverMap({ lot, statuses, recommended, route = [], backdrop = null, photo = false, scene = null, walkPath = null }) {
   const stalls = useMemo(() => tidyStalls(lot.stalls), [lot]);
   const tidyTarget = recommended ? stalls.find((s) => s.id === recommended.id) || recommended : null;
   const geo = useMemo(() => {
@@ -234,8 +234,8 @@ export default function DriverMap({ lot, statuses, recommended, route = [], back
 
       {/* walk from your space to the building */}
       {lot.building && tidyTarget && (
-        <line x1={tidyTarget.centroid.x} y1={tidyTarget.centroid.y} x2={lot.building.x} y2={lot.building.y}
-          stroke="#fbbf24" strokeWidth={font * 0.14} strokeLinecap="round" strokeDasharray={`${font * 0.05} ${font * 0.35}`} opacity="0.9" />
+        <polyline points={(walkPath?.length > 1 ? walkPath : [tidyTarget.centroid, lot.building]).map((p) => `${p.x},${p.y}`).join(" ")} fill="none"
+          stroke="#fbbf24" strokeWidth={font * 0.14} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={`${font * 0.05} ${font * 0.35}`} opacity="0.9" />
       )}
       {lot.entrance && <Pill x={lot.entrance.x} y={lot.entrance.y} text="ENTRANCE" font={font * 0.7} bg="#e2e8f0" fg="#0f172a" />}
       {lot.building && <Pill x={lot.building.x} y={lot.building.y} text="BUILDING" font={font * 0.7} bg="#fbbf24" fg="#1c1917" />}

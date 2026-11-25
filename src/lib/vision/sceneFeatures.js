@@ -96,27 +96,40 @@ export function sceneFeatures(scene, rect, stalls = []) {
     }
   }
 
-  // Not drivable: islands and buildings.
+  // ------------------------------------------------ pedestrian areas
+  const { walkways, crossings } = pedestrianAreas(scene, { gw, gh, f, share, toLot, cellArea, stallW, stallArea, pxPerUnit, stalls, inStall, buildings, rect });
+
+  // Surfaces: 1 planted island, 2 building, 3 walkway, 4 crossing (the last
+  // drawn wins). Islands and buildings are not drivable.
   const blocked = new Uint8Array(gw * gh);
-  const mark = (polys) => {
+  const mark = (polys, value = 1) => {
     for (const poly of polys) {
       const xs = poly.outer.map((p) => p.x), ys = poly.outer.map((p) => p.y);
       const g0 = [Math.floor(((Math.min(...xs) - rect.x) / rect.w) * gw), Math.floor(((Math.min(...ys) - rect.y) / rect.h) * gh)];
       const g1 = [Math.ceil(((Math.max(...xs) - rect.x) / rect.w) * gw), Math.ceil(((Math.max(...ys) - rect.y) / rect.h) * gh)];
       for (let gy = Math.max(0, g0[1]); gy < Math.min(gh, g1[1]); gy += 1) for (let gx = Math.max(0, g0[0]); gx < Math.min(gw, g1[0]); gx += 1) {
         const p = toLot([gx + 0.5, gy + 0.5]);
-        if (pointInPolygon(p, poly.outer) && !poly.holes.some((h) => pointInPolygon(p, h))) blocked[gy * gw + gx] = 1;
+        if (pointInPolygon(p, poly.outer) && !(poly.holes || []).some((h) => pointInPolygon(p, h))) blocked[gy * gw + gx] = value;
       }
     }
   };
-  mark(islands);
-  mark(buildings);
-  const obstacle = (p) => {
+  mark(islands, 1);
+  mark(walkways, 3);
+  mark(crossings, 4);
+  mark(buildings, 2);
+  const cellOf = (p) => {
     const gx = Math.floor(((p.x - rect.x) / rect.w) * gw), gy = Math.floor(((p.y - rect.y) / rect.h) * gh);
-    return gx >= 0 && gy >= 0 && gx < gw && gy < gh && blocked[gy * gw + gx] === 1 && !inStall(p);
+    return gx >= 0 && gy >= 0 && gx < gw && gy < gh ? gy * gw + gx : -1;
+  };
+  const SURF = [null, "planted", "building", "walkway", "crossing"];
+  const surfaceAt = (p) => { const k = cellOf(p); return k < 0 ? null : SURF[blocked[k]]; };
+  const obstacle = (p) => {
+    const k = cellOf(p);
+    // Raised walkways (kerbed) are not driven on either; crossings are.
+    return k >= 0 && (blocked[k] === 1 || blocked[k] === 2 || (blocked[k] === 3 && walkways.raised)) && !inStall(p);
   };
 
-  return { islands, buildings, trees, obstacle, stallW, cellArea };
+  return { islands, buildings, trees, walkways, crossings, obstacle, surfaceAt, stallW, cellArea };
 }
 
 // Outlines of where `values` >= level, as { outer, holes } polygons in lot units.
@@ -204,4 +217,140 @@ function straighten(ring, eps) {
   ring.forEach((p, i) => { const d = Math.hypot(p.x - ring[0].x, p.y - ring[0].y); if (d > fd) { fd = d; far = i; } });
   const first = rdp(ring.slice(0, far + 1)), second = rdp([...ring.slice(far), ring[0]]);
   return [...first.slice(0, -1), ...second.slice(0, -1)];
+}
+
+// Pedestrian areas in the picture.
+//  * Walkways and sidewalks: wide strips of surface clearly lighter than the
+//    lot's own pavement (concrete next to asphalt), or light tan concrete.
+//    Thin painted lines are not walkways (they vanish when the mask is opened).
+//  * Crossings: zebra crossings and hatched walk zones, i.e.
+//    parallel painted marks (four or more), close together, outside the
+//    parking spaces.
+function pedestrianAreas(scene, g) {
+  const { gw, gh, f, toLot, stallW, stallArea, pxPerUnit, stalls, inStall, buildings } = g;
+  const { W, H, cls } = scene;
+  const lum = scene.lum;
+  const out = { walkways: [], crossings: [] };
+  if (!lum) return out;
+  // The lot's pavement brightness: inside the mapped spaces.
+  const inside = [];
+  for (const st of stalls) {
+    const c = st.poly.reduce((a, p) => ({ x: a.x + p.x / st.poly.length, y: a.y + p.y / st.poly.length }), { x: 0, y: 0 });
+    for (const p of st.poly) {
+      const q = { x: c.x + (p.x - c.x) * 0.5, y: c.y + (p.y - c.y) * 0.5 };
+      const px = Math.round((q.x - g.rect.x) * pxPerUnit), py = Math.round((q.y - g.rect.y) * (H / g.rect.h));
+      if (px >= 0 && py >= 0 && px < W && py < H && cls[py * W + px] === SURFACE.PAVE) inside.push(lum[py * W + px]);
+    }
+  }
+  if (inside.length < 8) return out;
+  inside.sort((a, b) => a - b);
+  const base = inside[Math.floor(inside.length / 2)];
+  const spread = Math.max(6, inside[Math.floor(inside.length * 0.85)] - base);
+
+  // Walkways.
+  const light = new Uint8Array(gw * gh);
+  const cnt = new Uint16Array(gw * gh);
+  for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) {
+    const i = y * W + x, c = cls[i], L = lum[i];
+    const concrete = (c === SURFACE.PAVE && L > base + spread + 10) || (c === SURFACE.EARTH && L > base + 5) || c === SURFACE.PAINT;
+    if (concrete) cnt[Math.floor(y / f) * gw + Math.floor(x / f)] += 1;
+  }
+  for (let k = 0; k < gw * gh; k += 1) light[k] = cnt[k] / (f * f) >= 0.55 ? 1 : 0;
+  // Opening: anything narrower than about a third of a space (painted lines) goes.
+  const r = Math.max(1, Math.round((stallW * gw) / g.rect.w / 5));
+  const opened = dilate(erode(light, gw, gh, r), gw, gh, r);
+  const centre = (k) => toLot([(k % gw) + 0.5, Math.floor(k / gw) + 0.5]);
+  for (const cells of components(opened, gw, gh)) {
+    if (cells.length * g.cellArea < stallArea * 0.8) continue;
+    let inSpaces = 0, inBuilding = 0;
+    for (const k of cells) {
+      const p = centre(k);
+      if (inStall(p)) inSpaces += 1;
+      else if (buildings.some((b) => pointInPolygon(p, b.outer))) inBuilding += 1;
+    }
+    if ((inSpaces + inBuilding) / cells.length > 0.3) continue;
+    // A walkway is a straight strip: long compared with its width, and it
+    // fills its own rectangle (stains and worn patches are ragged blobs).
+    let mx = 0, my = 0;
+    for (const k of cells) { mx += k % gw; my += Math.floor(k / gw); }
+    mx /= cells.length; my /= cells.length;
+    let sxx = 0, syy = 0, sxy = 0;
+    for (const k of cells) { const dx = (k % gw) - mx, dy = Math.floor(k / gw) - my; sxx += dx * dx; syy += dy * dy; sxy += dx * dy; }
+    const t = 0.5 * Math.atan2(2 * sxy, sxx - syy), ux = Math.cos(t), uy = Math.sin(t);
+    let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+    for (const k of cells) {
+      const x = k % gw, y = Math.floor(k / gw);
+      const a = x * ux + y * uy, b = -x * uy + y * ux;
+      a0 = Math.min(a0, a); a1 = Math.max(a1, a); b0 = Math.min(b0, b); b1 = Math.max(b1, b);
+    }
+    const len = a1 - a0 + 1, wid = b1 - b0 + 1;
+    if (len < wid * 2.5 || cells.length / (len * wid) < 0.45) continue;
+    const mask = new Float64Array(gw * gh);
+    for (const k of cells) mask[k] = 1;
+    out.walkways.push(...shapes(mask, gw, gh, 0.5, toLot).filter((poly) => polygonArea(poly.outer) >= stallArea * 0.5));
+  }
+  // A walkway between rows of spaces is a kerbed, raised strip.
+  out.walkways.raised = true;
+
+  // Crossings: painted marks grouped by direction and spacing.
+  const stallPx = stallW * pxPerUnit;
+  const label = new Int32Array(W * H).fill(-1);
+  const marks = [];
+  for (let s0 = 0; s0 < W * H; s0 += 1) {
+    if (cls[s0] !== SURFACE.PAINT || label[s0] >= 0) continue;
+    const stack = [s0], pix = [];
+    label[s0] = marks.length;
+    while (stack.length && pix.length < 4000) {
+      const k = stack.pop();
+      pix.push(k);
+      const x = k % W, y = (k - x) / W;
+      for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const n = ny * W + nx;
+        if (cls[n] === SURFACE.PAINT && label[n] < 0) { label[n] = marks.length; stack.push(n); }
+      }
+    }
+    if (pix.length < 5) { marks.push(null); continue; }
+    // Orientation and size from second moments.
+    let mx = 0, my = 0;
+    for (const k of pix) { mx += k % W; my += Math.floor(k / W); }
+    mx /= pix.length; my /= pix.length;
+    let sxx = 0, syy = 0, sxy = 0;
+    for (const k of pix) { const dx = (k % W) - mx, dy = Math.floor(k / W) - my; sxx += dx * dx; syy += dy * dy; sxy += dx * dy; }
+    const angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    const l1 = (sxx + syy) / 2 / pix.length, d = Math.sqrt(((sxx - syy) / 2 / pix.length) ** 2 + (sxy / pix.length) ** 2);
+    const length = Math.sqrt(12 * (l1 + d)), width = Math.sqrt(12 * Math.max(0, l1 - d));
+    const lot = toLot([mx / f, my / f]);
+    // Space dividers are long (a space deep); crossing bars and hatching are short.
+    if (length > stallPx * 1.7 || length < stallPx * 0.35 || inStall(lot)) { marks.push(null); continue; }
+    marks.push({ x: mx, y: my, angle, length, width, pix });
+  }
+  const real = marks.filter(Boolean);
+  const parent = real.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < real.length; i += 1) for (let j = i + 1; j < real.length; j += 1) {
+    const a = real[i], b = real[j];
+    const dAng = Math.abs(((a.angle - b.angle + Math.PI * 1.5) % Math.PI) - Math.PI / 2);
+    if (dAng > 0.2) continue;
+    const gap = Math.hypot(a.x - b.x, a.y - b.y);
+    if (gap > stallPx * 0.6 || gap < 1.5) continue;
+    if (Math.abs(a.length - b.length) > Math.max(a.length, b.length) * 0.5) continue;
+    parent[find(i)] = find(j);
+  }
+  const groups = new Map();
+  real.forEach((m, i) => { const r0 = find(i); if (!groups.has(r0)) groups.set(r0, []); groups.get(r0).push(m); });
+  for (const group of groups.values()) {
+    if (group.length < 4) continue;
+    // The area they cover: the rectangle along the marks' direction.
+    const t = group[0].angle, ux = Math.cos(t), uy = Math.sin(t);
+    let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+    for (const m of group) for (const k of m.pix) {
+      const x = k % W, y = Math.floor(k / W);
+      const a = x * ux + y * uy, b = -x * uy + y * ux;
+      a0 = Math.min(a0, a); a1 = Math.max(a1, a); b0 = Math.min(b0, b); b1 = Math.max(b1, b);
+    }
+    const corner = (a, b) => toLot([(a * ux - b * uy) / f, (a * uy + b * ux) / f]);
+    out.crossings.push({ outer: [corner(a0, b0), corner(a1, b0), corner(a1, b1), corner(a0, b1)], holes: [], marks: group.length });
+  }
+  return out;
 }
