@@ -22,7 +22,7 @@ export function drawOverlay(ctx, { width, height, calibration, statuses, tracks 
   const font = Math.max(10, Math.min(14, width / 70));
 
   // Ground calibration
-  const quad = calibration?.ground?.quad;
+  const quad = calibration?.ground?.auto ? null : calibration?.ground?.quad;
   if (quad?.length === 4) {
     ctx.setLineDash([6, 5]);
     ctx.strokeStyle = "rgba(56,189,248,0.8)";

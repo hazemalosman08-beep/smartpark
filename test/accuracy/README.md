@@ -6,6 +6,7 @@ Hand-made answer keys (the centre of every fully visible painted space, and whet
 |---|---|---|
 | `garage.png` (concrete deck) | 51 | 21 |
 | `drone.png` (drone view, islands and trees) | 81 | 18 |
+| `tilted.png` (the drone lot as a tilted pole camera sees it) | 81 | 18 |
 
 `biglot.png` has no answer key yet (used for visual checks).
 
@@ -24,5 +25,8 @@ Results (row-based space finder):
 |---|---|---|---|
 | garage | 51/51 | 0 | 51/51 |
 | drone | 80/81 | 5 (real spaces cut by the picture edge) | 80/80 |
+| tilted | 76/81 | 6 (edge spaces) | 75/76 |
 
 Before it: garage 47/51 and 46/47; drone 63/81 with 13 extra and 58/63.
+
+Tilted camera: before automatic straightening 39/81 spaces found; after 76/81.

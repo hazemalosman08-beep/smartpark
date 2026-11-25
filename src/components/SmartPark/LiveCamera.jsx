@@ -13,7 +13,8 @@ import {
 import { drawOverlay } from "@/lib/vision/overlay";
 import { clearPhoto, loadPhoto, savePhoto } from "@/lib/photoStore";
 import { autoMapLot } from "@/lib/vision/autoMap";
-import { imagePixels, stallAppearance } from "@/lib/vision/stallFinder";
+import { estimateTilt, refineTilt } from "@/lib/vision/autoTilt";
+import { findStallsByRows, imagePixels, stallAppearance } from "@/lib/vision/stallFinder";
 import { pointInPolygon, projectOnSegment } from "@/lib/vision/geometry";
 
 const TOOLS = {
@@ -568,19 +569,26 @@ export default function LiveCamera({
     const looksAerial = boxes.length >= 4 && aerialShare >= 0.6 ? "overhead" : null;
     const view = (!manual && !cal.stalls.length && (looksAerial || guessView(vehicles))) || cal.view || "angled";
     try {
+      const pixels = imagePixels(el);
+      // Tilted camera: measure the tilt from the parked cars (unless the lot
+      // corners were set by hand) so spaces and the plan are straightened.
+      const manualGround = cal.ground && !cal.ground.auto ? cal.ground : null;
+      const tilt = manualGround ? null : estimateTilt(vehicles, pixels.width, pixels.height);
+      const ground = manualGround || (tilt ? refineTilt(pixels, tilt, findStallsByRows) : null);
       const result = autoMapLot({
-        image: imagePixels(el),
+        image: pixels,
         vehicles,
         view,
+        ground,
         keepStalls: cal.stalls.filter((st) => !st.auto),
         keepLanes: cal.lanes.filter((l) => !l.auto),
         entrance: cal.entrance && !cal.entrance.auto ? cal.entrance : null,
       });
-      update({ stalls: result.stalls, lanes: result.lanes, entrance: result.entrance ?? cal.entrance, view });
+      update({ stalls: result.stalls, lanes: result.lanes, entrance: result.entrance ?? cal.entrance, view, ground });
       const { painted, fromCars } = result.stats;
       setNotice(
         result.stalls.length
-          ? `Found ${result.stalls.length} spaces — ${painted} from painted lines, ${fromCars} from parked cars.${view !== "overhead" ? " Painted lines are read in Overhead view only." : ""} Fix any with Remove space / Add row of spaces.`
+          ? `Found ${result.stalls.length} spaces — ${painted} from painted lines, ${fromCars} from parked cars.${ground ? " Tilted camera straightened." : view !== "overhead" ? " Painted lines are read in Overhead view only." : ""} Fix any with Remove space / Add row of spaces.`
           : manual ? "No spaces found. Use Add row of spaces, or switch Camera view to Overhead for a top-down picture." : null,
       );
     } catch (err) {

@@ -19,6 +19,10 @@ A parking-lot camera app that runs entirely in the browser. No backend and no ac
 - **Building:** on the Camera tab, the Building tool marks where drivers walk to. The guide then sends each
   driver to the free space with the shortest walk to it, and the directions end with the walking distance.
   Routes are planned over the open pavement between the spaces (or along lanes drawn by hand).
+- **Tilted cameras are straightened automatically:** the tilt is measured from how cars shrink toward the
+  back of the picture, refined so painted spaces come out equal width and about 2.5 x 5 m, then spaces are
+  found in the straightened picture and the Lot/Driver maps are drawn top-down. Lot corners (More tools)
+  overrides it by hand.
 - **Find my car:** look up a car by its ID on the same device.
 - **Installable** as an app (PWA): "Install app" in Chrome/Edge/Android, or Share → Add to Home Screen on iPhone.
 
