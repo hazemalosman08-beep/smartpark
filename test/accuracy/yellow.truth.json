@@ -1,0 +1,437 @@
+{
+ "image": "yellow.png",
+ "width": 2000,
+ "height": 1333,
+ "view": "overhead",
+ "note": "Yellow-lined lot, three double rows; accessible spaces by the booth (blue). Hand-labelled centre of every fully visible space; spaces cut by the picture edge (top half of the top row, left and right edges) are left out.",
+ "spaces": [
+  {
+   "label": "T-1",
+   "x": 108,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-2",
+   "x": 241,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-3",
+   "x": 369,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-4",
+   "x": 496,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-5",
+   "x": 623,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-6",
+   "x": 742,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-7",
+   "x": 854,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-8",
+   "x": 968,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-9",
+   "x": 1082,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-10",
+   "x": 1194,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-11",
+   "x": 1307,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-12",
+   "x": 1421,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-13",
+   "x": 1534,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-14",
+   "x": 1646,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-15",
+   "x": 1760,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "T-16",
+   "x": 1874,
+   "y": 187,
+   "occupied": false
+  },
+  {
+   "label": "MU-A1",
+   "x": 170,
+   "y": 490,
+   "occupied": false,
+   "accessible": true
+  },
+  {
+   "label": "MU-A2",
+   "x": 370,
+   "y": 490,
+   "occupied": false,
+   "accessible": true
+  },
+  {
+   "label": "MU-A3",
+   "x": 798,
+   "y": 490,
+   "occupied": false,
+   "accessible": true
+  },
+  {
+   "label": "MU-A4",
+   "x": 965,
+   "y": 490,
+   "occupied": true,
+   "accessible": true
+  },
+  {
+   "label": "ML-A1",
+   "x": 165,
+   "y": 640,
+   "occupied": false,
+   "accessible": true
+  },
+  {
+   "label": "ML-A2",
+   "x": 360,
+   "y": 640,
+   "occupied": false,
+   "accessible": true
+  },
+  {
+   "label": "ML-A3",
+   "x": 795,
+   "y": 640,
+   "occupied": false,
+   "accessible": true
+  },
+  {
+   "label": "ML-A4",
+   "x": 963,
+   "y": 640,
+   "occupied": false,
+   "accessible": true
+  },
+  {
+   "label": "MU-1",
+   "x": 1075,
+   "y": 490,
+   "occupied": false
+  },
+  {
+   "label": "ML-1",
+   "x": 1075,
+   "y": 640,
+   "occupied": false
+  },
+  {
+   "label": "MU-2",
+   "x": 1190,
+   "y": 490,
+   "occupied": true
+  },
+  {
+   "label": "MU-3",
+   "x": 1306,
+   "y": 490,
+   "occupied": false
+  },
+  {
+   "label": "MU-4",
+   "x": 1422,
+   "y": 490,
+   "occupied": false
+  },
+  {
+   "label": "MU-5",
+   "x": 1538,
+   "y": 490,
+   "occupied": false
+  },
+  {
+   "label": "MU-6",
+   "x": 1654,
+   "y": 490,
+   "occupied": false
+  },
+  {
+   "label": "MU-7",
+   "x": 1771,
+   "y": 490,
+   "occupied": false
+  },
+  {
+   "label": "MU-8",
+   "x": 1888,
+   "y": 490,
+   "occupied": false
+  },
+  {
+   "label": "ML-2",
+   "x": 1188,
+   "y": 640,
+   "occupied": false
+  },
+  {
+   "label": "ML-3",
+   "x": 1305,
+   "y": 640,
+   "occupied": false
+  },
+  {
+   "label": "ML-4",
+   "x": 1423,
+   "y": 640,
+   "occupied": false
+  },
+  {
+   "label": "ML-5",
+   "x": 1540,
+   "y": 640,
+   "occupied": false
+  },
+  {
+   "label": "ML-6",
+   "x": 1658,
+   "y": 640,
+   "occupied": false
+  },
+  {
+   "label": "ML-7",
+   "x": 1777,
+   "y": 640,
+   "occupied": false
+  },
+  {
+   "label": "ML-8",
+   "x": 1896,
+   "y": 640,
+   "occupied": false
+  },
+  {
+   "label": "BU-1",
+   "x": 146,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-2",
+   "x": 287,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-3",
+   "x": 427,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-4",
+   "x": 567,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-5",
+   "x": 698,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-6",
+   "x": 819,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-7",
+   "x": 940,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-8",
+   "x": 1062,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-9",
+   "x": 1183,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-10",
+   "x": 1303,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-11",
+   "x": 1424,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-12",
+   "x": 1547,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-13",
+   "x": 1668,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-14",
+   "x": 1790,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BU-15",
+   "x": 1914,
+   "y": 975,
+   "occupied": false
+  },
+  {
+   "label": "BL-1",
+   "x": 126,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-2",
+   "x": 270,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-3",
+   "x": 414,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-4",
+   "x": 556,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-5",
+   "x": 689,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-6",
+   "x": 812,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-7",
+   "x": 935,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-8",
+   "x": 1058,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-9",
+   "x": 1182,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-10",
+   "x": 1303,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-11",
+   "x": 1426,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-12",
+   "x": 1550,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-13",
+   "x": 1674,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-14",
+   "x": 1798,
+   "y": 1132,
+   "occupied": false
+  },
+  {
+   "label": "BL-15",
+   "x": 1922,
+   "y": 1132,
+   "occupied": false
+  }
+ ]
+}

@@ -28,4 +28,5 @@ const path = require("path");
   }
   console.log(`${truth.image}: ${app.vehicles} cars | overlapping pairs ${s.overlaps} | spaces ${s.found}/${s.truth} found, ${s.missed} missed, ${s.duplicates} duplicates, ${s.extra} extra, ${s.merged} merged (app total ${s.appTotal}) | occupancy ${o.correct}/${o.checked} right, app says ${o.appTaken} taken vs ${o.truthTaken} truly taken`);
   if (o.wrong.length) console.log("  wrong:", o.wrong.join(", "));
+  if (r.accessible) console.log(`  accessible: ${r.accessible.found}/${r.accessible.truth} found, ${r.accessible.wrongly} normal spaces marked accessible`);
 })();

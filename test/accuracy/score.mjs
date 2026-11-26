@@ -69,7 +69,19 @@ export function score(truth, app) {
   const overlaps = overlappingPairs(app.stalls);
   const appTotal = stalls.length;
   const appTaken = stalls.filter((s) => status.get(s.id)?.status === "occupied").length;
+  // Accessible spaces (only when the truth marks them).
+  let accessible = null;
+  if (truth.spaces.some((t) => t.accessible)) {
+    const acc = truth.spaces.map((t, i) => ({ t, c: covering[i] }));
+    const real = acc.filter((a) => a.t.accessible);
+    accessible = {
+      truth: real.length,
+      found: real.filter((a) => a.c.some((s) => s.kind === "accessible")).length,
+      wrongly: acc.filter((a) => !a.t.accessible && a.c.some((s) => s.kind === "accessible")).length,
+    };
+  }
   return {
+    accessible,
     spaces: { truth: truth.spaces.length, found, missed: truth.spaces.length - found, duplicates, extra, merged, appTotal, overlaps },
     occupancy: { correct: occRight, checked: occChecked, truthTaken, appTaken, wrong },
   };
