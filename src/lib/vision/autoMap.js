@@ -3,6 +3,7 @@
 import { findStallsCombined as findStalls, stallAppearance } from "./stallFinder.js";
 import { dedupeStalls, nextRowLetter, stallsFromVehicles } from "./lot.js";
 import { rectify } from "./autoTilt.js";
+import { findAccessible } from "./accessible.js";
 import { polygonArea, polygonOverlapArea } from "./geometry.js";
 
 /**
@@ -52,6 +53,15 @@ export function autoMapLot({ image, vehicles = [], view = "overhead", ground = n
   // Spaces partly outside the picture cannot be judged (half the space is not
   // visible); hand-drawn ones are kept.
   stalls = stalls.filter((st) => !st.auto || visibleShare(st.poly) >= 0.85);
+  // Accessible spaces: the blue wheelchair symbol (spaces set by hand keep
+  // their type).
+  try {
+    const acc = findAccessible(image, stalls, vehicles);
+    stalls = [
+      ...stalls.map((st) => (acc.marked.has(st.id) && !st.kind ? { ...st, kind: "accessible", kindAuto: true } : st)),
+      ...acc.added.filter((st) => visibleShare(st.poly) >= 0.85),
+    ];
+  } catch { /* the picture could not be read: no types */ }
 
   const lanes = [...keepLanes, ...found.aisles.map((a) => ({ ...a, auto: true }))];
   // Entrance guess: the aisle end nearest the bottom of the picture.

@@ -34,6 +34,11 @@ A parking-lot camera app that runs entirely in the browser. No backend and no ac
   - **Pedestrian areas read from the picture:** walkways and sidewalks (straight strips of concrete lighter
     than the lot's pavement, drawn raised in 3D) and crossings (four or more parallel painted bars or
     hatching outside the spaces, white or yellow).
+- **Accessible (disabled) parking is found automatically** from the blue wheelchair symbol: a mapped space
+  with the symbol is marked accessible; past the end of a row, spaces marked with the symbol between blue
+  hatched access aisles are added (the aisles never become spaces). A visible symbol means the space is free.
+  Blue cars and reflections are not taken for paint. Spaces with a car on the symbol cannot be read; mark those
+  with **Space type** (More tools). Drivers tick "I need an accessible space" on the Driver tab.
 - **Building:** on the Camera tab, the Building tool marks where drivers walk to; each extra click adds another
   destination drivers can choose. The guide sends each driver to the free space with the shortest walk.
   **Space type** (More tools) marks spaces accessible or reserved.

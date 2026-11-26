@@ -607,32 +607,54 @@ export function imagePixels(source, maxSide = 720) {
 // object detector does not recognise it from above.
 // Returns Map(stallId -> score); about 1 means "looks occupied".
 export function stallAppearance({ data, width: W, height: H }, stalls) {
+  // Blue paint (the accessible symbol) is not a car.
+  const BLUE = -1;
   const gray = (x, y) => {
+    const xi = Math.max(0, Math.min(W - 1, Math.round(x))), yi = Math.max(0, Math.min(H - 1, Math.round(y)));
+    const i = (yi * W + xi) * 4;
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    if (b > r + 35 && b > g + 10 && b > 90) return BLUE;
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  };
+  const grayOf = (x, y) => {
     const xi = Math.max(0, Math.min(W - 1, Math.round(x))), yi = Math.max(0, Math.min(H - 1, Math.round(y)));
     const i = (yi * W + xi) * 4;
     return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
   };
   const feats = stalls.map((s) => {
     const [p0, p1, p2, p3] = s.poly.map((p) => ({ x: (p.x / 100) * W, y: (p.y / 100) * H }));
-    const vals = [];
+    const grid = [];
     // Inner 20%..80% of the stall, away from the painted lines.
     for (let i = 0; i < 9; i += 1) for (let j = 0; j < 9; j += 1) {
       const u = 0.2 + (0.6 * i) / 8, v = 0.2 + (0.6 * j) / 8;
       const top = { x: p0.x + (p1.x - p0.x) * u, y: p0.y + (p1.y - p0.y) * u };
       const bot = { x: p3.x + (p2.x - p3.x) * u, y: p3.y + (p2.y - p3.y) * u };
-      vals.push(gray(top.x + (bot.x - top.x) * v, top.y + (bot.y - top.y) * v));
+      const x = top.x + (bot.x - top.x) * v, y = top.y + (bot.y - top.y) * v;
+      const val = gray(x, y);
+      grid.push({ blue: val === BLUE, g: val === BLUE ? grayOf(x, y) : val });
     }
+    // An accessible space whose symbol is in sight is free: a parked car
+    // would cover it. (Elsewhere blue is judged like any colour: blue cars,
+    // reflections.)
+    if (s.kind === "accessible" && grid.filter((c) => c.blue && c.g >= 85).length >= 3) return { id: s.id, free: true };
+    const vals = grid.map((c) => c.g);
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
     const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length);
-    return { id: s.id, mean, sd };
+    return { id: s.id, row: s.row, mean, sd };
   });
-  if (feats.length < 4) return new Map();
-  // The typical empty stall: the quieter half of all stalls.
-  const bySd = [...feats].sort((a, b) => a.sd - b.sd).slice(0, Math.max(2, Math.ceil(feats.length / 2)));
-  const m0 = median(bySd.map((f) => f.mean));
-  const s0 = median(bySd.map((f) => f.sd));
-  const spread = Math.max(6, median(bySd.map((f) => Math.abs(f.mean - m0))) * 2.5);
-  return new Map(feats.map((f) => [f.id, Math.max(Math.abs(f.mean - m0) / (spread * 2.2), (f.sd - s0) / Math.max(10, s0 * 2.2))]));
+  const usable = feats.filter((f) => !f.free);
+  if (usable.length < 4) return new Map();
+  // The typical empty stall: the quieter half of the stalls.
+  const baseline = (list) => {
+    const quiet = [...list].sort((a, b) => a.sd - b.sd).slice(0, Math.max(2, Math.ceil(list.length / 2)));
+    const m0 = median(quiet.map((f) => f.mean));
+    const s0 = median(quiet.map((f) => f.sd));
+    const spread = Math.max(6, median(quiet.map((f) => Math.abs(f.mean - m0))) * 2.5);
+    const score = (f) => Math.max(Math.abs(f.mean - m0) / (spread * 2.2), (f.sd - s0) / Math.max(10, s0 * 2.2));
+    return score;
+  };
+  const lotWide = baseline(usable);
+  return new Map(feats.map((f) => [f.id, f.free ? 0 : lotWide(f)]));
 }
 
 // ===========================================================================
