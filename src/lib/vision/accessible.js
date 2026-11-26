@@ -128,7 +128,9 @@ export function findAccessible(image, stalls, vehicles = []) {
         if (kind !== "mark" && runStart >= 0) {
           if (kind === "aisle" || quiet > 2) { marks.push([runStart, t]); runStart = -1; }
         }
-        if (quiet > pitch * (sawBlue ? 0.9 : 0.6)) break;
+        // Before the blue zone: one ordinary space may lie between; inside it:
+        // a space with a car on its symbol.
+        if (quiet > pitch * (sawBlue ? 1.25 : 1.5)) break;
       }
       if (runStart >= 0) marks.push([runStart, t]);
       // Accessible spaces come with an access aisle; without one, a blue mark

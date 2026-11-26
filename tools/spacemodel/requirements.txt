@@ -1,0 +1,12 @@
+# Licences: torch BSD-3, segmentation-models-pytorch MIT, onnx/onnxruntime MIT,
+# opencv-python-headless Apache-2.0, shapely BSD-3, scipy BSD-3, pillow HPND, numpy BSD-3
+torch>=2.2
+torchvision>=0.17
+segmentation-models-pytorch>=0.3.3
+onnx>=1.15
+onnxruntime>=1.17
+opencv-python-headless>=4.8
+shapely>=2.0
+scipy>=1.11
+pillow>=10
+numpy>=1.24

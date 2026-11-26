@@ -1,7 +1,7 @@
 # Hybrid parking-space detection: research and design
 
-Status: design + tooling on branch `hybrid-detection`. **No model has been trained yet, and no accuracy
-figures exist for one.** Every number below about SmartPark comes from the regression suite
+Status: built on branch `hybrid-detection` (section 8). **No model has been trained on real data yet, and
+no accuracy figures exist for one.** Every number below about SmartPark comes from the regression suite
 (`npm run test:accuracy`); numbers about other work are quoted from their authors and marked as such.
 
 ## 1. Goal
@@ -89,3 +89,31 @@ also feeds an oriented-box detector.
   product, either buy an Ultralytics licence or replace them with an Apache/MIT detector (e.g. an
   RT-DETR/D-FINE model); not changed on this branch.
 * Browser cost: a 512×512 MobileNetV2 U-Net is a few MB and runs once per mapping, not per frame.
+
+## 8. What is built (branch `hybrid-detection`)
+
+| Requirement | Where | State |
+|---|---|---|
+| Space model (segmentation, licence-clean) | `tools/spacemodel/train.py`, `notebooks/train_space_model.ipynb` | Training pipeline done and tested; **not trained on real data yet** |
+| Double rows, angled spaces, yellow/white lines, shadows, hidden spaces | boundary class + augmentations (`data.py`), synthetic generator covers all of them (`synth.py`) | In the design and the training data; effect on real lots unmeasured until trained |
+| Merge with the geometric finder | `src/lib/vision/hybrid.js`, `spaceModel.js`, `spaceModel.worker.js`, `spaceMasks.js` | Done; runs only when a model is deployed; verified in the browser with a practice model |
+| Confidence for every space | `geometricConfidence` / `mergeSpaces` in `hybrid.js` | Done; spaces under 0.5 are drawn dashed on the Camera tab |
+| One-click row fill | `src/lib/vision/fillRow.js`, *Fill missed row* tool | Done |
+| Annotation export | `src/lib/annotationExport.js`, *Export for training* | Done (`smartpark-annotation/v1`) |
+| Regression suite | `npm run test:accuracy`, `test/accuracy/baseline.json` | Done; 8 lots, 4 with full answer keys |
+| Lot-wise train/val/test split | `tools/spacemodel/split.py` | Done, tested (no lot in two splits) |
+| Colab notebook | `notebooks/train_space_model.ipynb` | Done; licence gate, split, train, test, export |
+
+### Measured so far (SmartPark's own geometric detector; no model)
+
+* Baseline (`npm run test:accuracy`): garage 51/51 spaces, drone 81/81, tilted 76/81, yellow lot 48/70
+  (accessible 0/8). Occupancy: garage 51/51, drone 81/81, tilted 76/76, yellow 46/48.
+* *Fill missed row* on the yellow lot: five clicks (one per missed row end) take it from 48/70 to
+  62/70 spaces; the 8 still missing are the accessible spaces and the plain space next to them.
+
+### Next steps
+
+1. Export 20–50 corrected pictures of different lots (your own photos) with *Export for training*.
+2. Run the notebook (ACPDS + your exports, synthetic warm-up), read the per-lot test numbers.
+3. Put the model in `public/models/`, run `npm run test:accuracy`, merge to `main` only without regressions.
+4. Decide on the car detector licence (section 7).

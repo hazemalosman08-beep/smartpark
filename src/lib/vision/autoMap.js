@@ -4,6 +4,7 @@ import { findStallsCombined as findStalls, stallAppearance } from "./stallFinder
 import { dedupeStalls, nextRowLetter, stallsFromVehicles } from "./lot.js";
 import { rectify } from "./autoTilt.js";
 import { findAccessible } from "./accessible.js";
+import { geometricConfidence } from "./hybrid.js";
 import { polygonArea, polygonOverlapArea } from "./geometry.js";
 
 /**
@@ -63,6 +64,9 @@ export function autoMapLot({ image, vehicles = [], view = "overhead", ground = n
       ...acc.added.filter((st) => visibleShare(st.poly) >= 0.85),
     ];
   } catch { /* the picture could not be read: no types */ }
+
+  // Every space gets a confidence from its evidence (lines, row, car, by hand).
+  try { stalls = geometricConfidence(image, stalls, vehicles); } catch { /* keep without */ }
 
   const lanes = [...keepLanes, ...found.aisles.map((a) => ({ ...a, auto: true }))];
   // Entrance guess: the aisle end nearest the bottom of the picture.

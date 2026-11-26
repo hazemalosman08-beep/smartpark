@@ -47,3 +47,8 @@ test/e2e/lot_camera2.png
 test/e2e/lot_rectified.png
 test/e2e/lot_sim.png
 test/e2e/lot_sim_phone.png
+
+# Python
+__pycache__/
+*.pyc
+runs/

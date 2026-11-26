@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Cpu, Eraser, FileVideo, Grid3x3, Loader2, MapPin, Pause, Play, Route, ScanSearch,
   Smartphone, Sparkles, Square, SquareDashed, Trash2, Video, VideoOff, LogOut as ExitIcon,
-  Building2, Building, Accessibility,
+  Building2, Building, Accessibility, Wand2, FileDown,
 } from "lucide-react";
 import RemoteCameraDialog from "@/components/SmartPark/RemoteCameraDialog";
 import { makePairCode, receivePhoneCamera } from "@/lib/phoneLink";
@@ -13,11 +13,16 @@ import {
 import { drawOverlay } from "@/lib/vision/overlay";
 import { clearPhoto, loadPhoto, savePhoto } from "@/lib/photoStore";
 import { autoMapLot } from "@/lib/vision/autoMap";
+import { mergeSpaces } from "@/lib/vision/hybrid";
+import { fillRowAt } from "@/lib/vision/fillRow";
+import { buildAnnotation, captureMedia, downloadJson } from "@/lib/annotationExport";
+import { detectSpacesWithModel } from "@/lib/vision/spaceModel";
 import { estimateTilt, refineTilt } from "@/lib/vision/autoTilt";
 import { findStallsByRows, imagePixels, stallAppearance } from "@/lib/vision/stallFinder";
 import { pointInPolygon, projectOnSegment } from "@/lib/vision/geometry";
 
 const TOOLS = {
+  fill: { label: "Fill missed row", icon: Wand2, points: 0, color: "#a3e635", hint: ["Click inside a row of spaces the app missed: the whole row is filled from its painted lines. Click again for another row."] },
   row: { label: "Add row of spaces", icon: Grid3x3, points: 4, color: "#22d3ee", hint: ["Click the front-left corner of the row (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
   stall: { label: "Single stall", icon: Square, points: 4, color: "#22d3ee", hint: ["Front-left corner (aisle side)", "Front-right corner", "Back-right corner", "Back-left corner"] },
   lane: { label: "Driving lane", icon: Route, points: Infinity, color: "#60a5fa", hint: ["Click along the centre of the lane, in driving direction. Double-click or press Enter to finish."] },
@@ -33,7 +38,7 @@ const TOOLS = {
 const SOURCES_IDLE = "none";
 // Shown by default; the rest (single stall, lanes, exit, lot corners) sit
 // behind "More tools" — the automatic mapping covers them in most lots.
-const MAIN_TOOLS = ["entrance", "building", "row", "erase"];
+const MAIN_TOOLS = ["fill", "entrance", "building", "row", "erase"];
 
 export default function LiveCamera({
   calibration,
@@ -92,6 +97,7 @@ export default function LiveCamera({
   const autoDoneRef = useRef(new Set()); // sources already mapped automatically
   const sourceKeyRef = useRef("");
   const freshPictureRef = useRef(false); // a picture the user just opened (maybe another lot)
+  const mapRunRef = useRef(0); // automatic searches started (the space model answers the latest)
   const sourceStartRef = useRef(0);
   const findSpacesRef = useRef(null);
   const appearanceRef = useRef(null);
@@ -555,6 +561,21 @@ export default function LiveCamera({
     if (!tool) return;
     e.preventDefault();
     const p = pointFrom(e);
+    if (tool === "fill") {
+      const el = mediaRef.current();
+      if (!mediaReady(el)) return;
+      const cal = calRef.current;
+      const vehicles = liveRef.current.tracks.filter((t) => t.state !== "lost");
+      try {
+        // A sharp copy of the picture: faint lines show better.
+        const r = fillRowAt(imagePixels(el, 1600), p, cal.stalls, vehicles);
+        if (r.stalls.length) {
+          update({ stalls: [...cal.stalls, ...r.stalls] });
+          setNotice(`Added ${r.stalls.length} space${r.stalls.length === 1 ? "" : "s"} (row ${r.stalls[0].row}${r.method === "template" ? ", sized like the nearest row" : ", from its painted lines"}). Remove any that are wrong.`);
+        } else setNotice("No row found there. Click on the painted lines of a missed row, or use Add row of spaces.");
+      } catch (err) { setNotice(err?.message || "Could not fill the row here"); }
+      return;
+    }
     if (tool === "spaceType") {
       const cal = calRef.current;
       const stall = [...cal.stalls].reverse().find((s) => pointInPolygon(p, s.poly));
@@ -635,6 +656,18 @@ export default function LiveCamera({
       }) : result.stalls;
       const leftovers = calRef.current.sample ? { exit: null, building: null, buildings: [], footprints: [] } : {};
       update({ ...leftovers, stalls, lanes: result.lanes, entrance: result.entrance ?? cal.entrance, view, ground });
+      // Hybrid: when a trained space model is deployed, it looks at the same
+      // picture and adds the spaces the rules missed (in the background).
+      const run = ++mapRunRef.current;
+      detectSpacesWithModel(pixels).then((model) => {
+        // A newer search started meanwhile: its result wins.
+        if (!model || run !== mapRunRef.current) return;
+        const merged = mergeSpaces(calRef.current.stalls, model, { vehicles });
+        if (merged.added || merged.confirmed) {
+          update({ stalls: merged.stalls });
+          setNotice((n) => `${n || ""} Space model: ${merged.confirmed} confirmed, ${merged.added} added.`.trim());
+        }
+      }).catch(() => { /* no model or it failed: geometric result stands */ });
       const { painted, fromCars } = result.stats;
       setNotice(
         result.stalls.length
@@ -825,6 +858,24 @@ export default function LiveCamera({
           onClick={() => { if (window.confirm("Remove all stalls, lanes, entrance/exit, buildings and the lot corners?")) update({ stalls: [], lanes: [], entrance: null, exit: null, ground: null, building: null, buildings: [], footprints: [] }); }}
         >
           <Trash2 className="h-3.5 w-3.5" /> Clear map
+        </Btn>
+        <Btn
+          disabled={!calibration.stalls.length || !streaming}
+          onClick={() => {
+            // Training data: this picture and its spaces as you corrected them.
+            const el = mediaRef.current();
+            if (!mediaReady(el)) return;
+            const lotId = window.prompt("Name of this lot (all pictures of the same lot must use the same name, so they stay in the same dataset split)", calRef.current.lotId || "");
+            if (lotId === null) return;
+            update({ lotId });
+            const image = captureMedia(el, `${lotId || "lot"}.jpg`);
+            const annotation = buildAnnotation({ calibration: { ...calRef.current, lotId }, statuses: liveRef.current.statuses, image, lotId, cars: liveRef.current.tracks.filter((t) => t.state !== "lost") });
+            downloadJson(`smartpark-${annotation.lot_id}-${Date.now()}.json`, annotation);
+            setNotice(`Exported ${annotation.spaces.length} spaces (${annotation.spaces.filter((x) => x.corrected).length} corrected by hand) for training.`);
+          }}
+          title="Download this picture and its spaces as training data (smartpark-annotation/v1)"
+        >
+          <FileDown className="h-3.5 w-3.5" /> Export for training
         </Btn>
         {notice && <span className="text-[11px] text-cyan-200">{notice}</span>}
       </div>

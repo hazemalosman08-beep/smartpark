@@ -59,7 +59,10 @@ export function drawOverlay(ctx, { width, height, calibration, statuses, tracks 
       ctx.fill();
       ctx.strokeStyle = highlight === stall.id ? "#fff" : tone.stroke;
       ctx.lineWidth = highlight === stall.id ? 3 : 1.5;
+      // Unsure spaces (low confidence) are drawn dashed: worth a look.
+      if (stall.confidence !== undefined && stall.confidence < 0.5) ctx.setLineDash([5, 4]);
       ctx.stroke();
+      ctx.setLineDash([]);
       const c = stall.poly.reduce((s, p) => ({ x: s.x + p.x / stall.poly.length, y: s.y + p.y / stall.poly.length }), { x: 0, y: 0 });
       const tag = stall.kind === "accessible" ? `♿ ${stall.label}` : stall.kind === "reserved" ? `R ${stall.label}` : stall.label;
       if (stall.kind) {
