@@ -10,6 +10,20 @@ Hand-made answer keys (the centre of every fully visible painted space, and whet
 
 `biglot.png` has no answer key yet (used for visual checks).
 
+**Regression suite (all lots at once):**
+
+```bash
+npm run test:accuracy                 # starts a dev server, scores every *.truth.json, compares with baseline.json
+npm run test:accuracy -- --update     # record the current scores as the new baseline (after a deliberate improvement)
+```
+
+It fails (exit code 1) if any labelled lot finds fewer spaces, makes more occupancy errors, adds more than one
+extra space, merges/duplicates spaces or loses accessible spaces. Lots without an answer key only warn when the
+number of spaces changes by more than 15%. Add a lot: put the picture here and write `<name>.truth.json`
+(centre of every fully visible space, `occupied`, optional `accessible`).
+
+**One lot at a time:**
+
 ```bash
 npx vite --port 5200                                   # in one terminal
 node test/accuracy/run.cjs test/accuracy/garage.truth.json

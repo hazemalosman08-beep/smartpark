@@ -1,0 +1,74 @@
+{
+ "dense.png": {
+  "labelled": false,
+  "appSpaces": 83,
+  "appTaken": 83,
+  "cars": 87
+ },
+ "drone.png": {
+  "labelled": true,
+  "truth": 81,
+  "found": 81,
+  "extra": 6,
+  "duplicates": 0,
+  "merged": 0,
+  "occupancyRight": 81,
+  "occupancyChecked": 81,
+  "accessibleFound": null,
+  "accessibleWrong": null
+ },
+ "garage.png": {
+  "labelled": true,
+  "truth": 51,
+  "found": 51,
+  "extra": 0,
+  "duplicates": 0,
+  "merged": 0,
+  "occupancyRight": 51,
+  "occupancyChecked": 51,
+  "accessibleFound": null,
+  "accessibleWrong": null
+ },
+ "office.png": {
+  "labelled": false,
+  "appSpaces": 165,
+  "appTaken": 9,
+  "cars": 9
+ },
+ "sideangle.png": {
+  "labelled": false,
+  "appSpaces": 61,
+  "appTaken": 42,
+  "cars": 43
+ },
+ "tilted.png": {
+  "labelled": true,
+  "truth": 81,
+  "found": 76,
+  "extra": 5,
+  "duplicates": 0,
+  "merged": 0,
+  "occupancyRight": 76,
+  "occupancyChecked": 76,
+  "accessibleFound": null,
+  "accessibleWrong": null
+ },
+ "user.png": {
+  "labelled": false,
+  "appSpaces": 61,
+  "appTaken": 60,
+  "cars": 65
+ },
+ "yellow.png": {
+  "labelled": true,
+  "truth": 70,
+  "found": 48,
+  "extra": 2,
+  "duplicates": 0,
+  "merged": 0,
+  "occupancyRight": 46,
+  "occupancyChecked": 48,
+  "accessibleFound": 0,
+  "accessibleWrong": 2
+ }
+}
