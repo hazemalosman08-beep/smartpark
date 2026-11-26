@@ -46,7 +46,11 @@ def iou(a, b):
 
 def match(pred, truth, thr=0.5):
     """Greedy one-to-one matching by IoU. Returns (tp, fp, fn)."""
-    pairs = sorted(((iou(p, t), i, j) for i, p in enumerate(pred) for j, t in enumerate(truth)), reverse=True)
+    # Only pairs whose bounding boxes touch can overlap (exact IoU is slow).
+    box = lambda q: (min(x for x, _ in q), min(y for _, y in q), max(x for x, _ in q), max(y for _, y in q))
+    pb, tb = [box(p) for p in pred], [box(t) for t in truth]
+    pairs = sorted(((iou(pred[i], truth[j]), i, j) for i in range(len(pred)) for j in range(len(truth))
+                    if pb[i][0] < tb[j][2] and tb[j][0] < pb[i][2] and pb[i][1] < tb[j][3] and tb[j][1] < pb[i][3]), reverse=True)
     used_p, used_t, tp = set(), set(), 0
     for v, i, j in pairs:
         if v < thr:

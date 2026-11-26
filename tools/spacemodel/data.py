@@ -32,6 +32,8 @@ class SpaceDataset:
         self.size = size
         self.augment = augment
         self.rng = random.Random(seed)
+        # Decoded pictures kept in memory (each DataLoader worker has its own).
+        self.cache, self.cache_bytes, self.cache_budget = {}, 0, int(os.environ.get("SPACE_CACHE_MB", "1500")) * 1_000_000
 
     def __len__(self):
         return len(self.items)
@@ -80,10 +82,25 @@ class SpaceDataset:
             img = img.filter(ImageFilter.GaussianBlur(rng.uniform(0.3, 1.5)))
         return img, polys
 
-    def __getitem__(self, i):
+    def _picture(self, i):
+        """The picture, shrunk to at most twice the model size (enough detail for
+        augmentation), decoded once and kept in memory within a budget."""
+        if i in self.cache:
+            return self.cache[i]
         path, ann = self.items[i]
         img = ann.load_image(os.path.dirname(path))
-        polys = [s.polygon for s in ann.spaces]
+        k = min(1.0, (self.size * 2) / max(img.size))
+        if k < 1:
+            img = img.resize((max(1, round(img.size[0] * k)), max(1, round(img.size[1] * k))), Image.BILINEAR)
+        polys = [[[x * k, y * k] for x, y in s.polygon] for s in ann.spaces]
+        cost = img.size[0] * img.size[1] * 3
+        if self.cache_bytes + cost <= self.cache_budget:
+            self.cache[i] = (img, polys)
+            self.cache_bytes += cost
+        return img, polys
+
+    def __getitem__(self, i):
+        img, polys = self._picture(i)
         if self.augment:
             img, polys = self._augment(img, polys)
         boxed, scale, ox, oy = letterbox(img, self.size)
@@ -95,6 +112,6 @@ class SpaceDataset:
 
     def truth(self, i):
         """Ground-truth spaces in model-input pixels (no augmentation), for metrics."""
-        path, ann = self.items[i]
-        _, scale, ox, oy = letterbox(ann.load_image(os.path.dirname(path)), self.size)
-        return ann.lot_id, [[[x * scale + ox, y * scale + oy] for x, y in s.polygon] for s in ann.spaces]
+        img, polys = self._picture(i)
+        _, scale, ox, oy = letterbox(img, self.size)
+        return self.items[i][1].lot_id, [[[x * scale + ox, y * scale + oy] for x, y in p] for p in polys]
