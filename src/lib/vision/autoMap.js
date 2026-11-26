@@ -53,6 +53,7 @@ export function autoMapLot({ image, vehicles = [], view = "overhead", ground = n
   // Spaces partly outside the picture cannot be judged (half the space is not
   // visible); hand-drawn ones are kept.
   stalls = stalls.filter((st) => !st.auto || visibleShare(st.poly) >= 0.85);
+  stalls = dropStrayPairs(stalls, vehicles, flat ? (p) => flat.toRect(p) : (p) => p);
   // Accessible spaces: the blue wheelchair symbol (spaces set by hand keep
   // their type).
   try {
@@ -91,6 +92,31 @@ function dropNonPavementRows(image, stalls, vehicles, inside, centre) {
     if (dark >= list.length * 0.75) drop.add(row);
   }
   return drop.size ? stalls.filter((s) => !drop.has(s.row) || !s.auto) : stalls;
+}
+
+// A tiny painted "row" (one or two spaces) standing alone, away from every
+// other space and with no car in it, is markings in a driving aisle (arrows,
+// stop lines), not parking.
+function dropStrayPairs(stalls, vehicles, project) {
+  const painted = (s) => s.auto && !s.learned;
+  const centre = (s) => { const q = s.poly.map(project); return { x: q.reduce((a, p) => a + p.x, 0) / q.length, y: q.reduce((a, p) => a + p.y, 0) / q.length }; };
+  const depth = (s) => { const q = s.poly.map(project); return Math.hypot((q[0].x + q[1].x) / 2 - (q[2].x + q[3].x) / 2, (q[0].y + q[1].y) / 2 - (q[2].y + q[3].y) / 2); };
+  const depths = stalls.filter(painted).map(depth).sort((a, b) => a - b);
+  if (depths.length < 5) return stalls;
+  const d = depths[Math.floor(depths.length / 2)];
+  const rows = new Map();
+  for (const s of stalls) if (painted(s)) { if (!rows.has(s.row)) rows.set(s.row, []); rows.get(s.row).push(s); }
+  const cars = vehicles.map((v) => project({ x: v.x + v.w / 2, y: v.y + v.h / 2 }));
+  const drop = new Set();
+  for (const [row, list] of rows) {
+    if (list.length > 2) continue;
+    const mine = list.map(centre);
+    const others = stalls.filter((s) => s.row !== row).map(centre);
+    const alone = mine.every((c) => others.every((o) => Math.hypot(c.x - o.x, c.y - o.y) > d * 1.2));
+    const hasCar = mine.some((c) => cars.some((k) => Math.hypot(c.x - k.x, c.y - k.y) < d * 0.5));
+    if (alone && !hasCar) drop.add(row);
+  }
+  return drop.size ? stalls.filter((s) => !painted(s) || !drop.has(s.row)) : stalls;
 }
 
 // A "space" far smaller or thinner than the lot's normal spaces is a piece of

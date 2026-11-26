@@ -91,6 +91,7 @@ export default function LiveCamera({
   const cycleRef = useRef(0);
   const autoDoneRef = useRef(new Set()); // sources already mapped automatically
   const sourceKeyRef = useRef("");
+  const freshPictureRef = useRef(false); // a picture the user just opened (maybe another lot)
   const sourceStartRef = useRef(0);
   const findSpacesRef = useRef(null);
   const appearanceRef = useRef(null);
@@ -189,6 +190,7 @@ export default function LiveCamera({
     if (!file) return;
     stopAll();
     const url = URL.createObjectURL(file);
+    freshPictureRef.current = true;
     setFileUrl(url);
     const isVideo = file.type.startsWith("video/");
     setSource(isVideo ? "video" : "image");
@@ -378,12 +380,19 @@ export default function LiveCamera({
     const coloured = tracks.map((t) => ({ ...t, color: colorsRef.current.get(t.key) }));
     liveRef.current.tracks = coloured;
     onUpdateRef.current?.({ tracks: coloured, statuses, events, streaming: true, still: isStill });
-    // First look at a new picture with no spaces mapped: find them automatically.
+    // First look at a new picture: find the spaces automatically when nothing
+    // is mapped, when only the sample lot is loaded, or when the user opened a
+    // new picture and the old map was found automatically too (it may be
+    // another lot). A map drawn by hand is kept.
     const key = sourceKeyRef.current;
     const settled = isStill || Date.now() - sourceStartRef.current > 4000;
-    if (el && settled && !autoDoneRef.current.has(key) && !cal.stalls.length && tracks.length) {
+    if (el && settled && !autoDoneRef.current.has(key) && tracks.length) {
+      const handDrawn = cal.stalls.some((st) => !st.auto);
+      const replace = !cal.stalls.length || cal.sample || (freshPictureRef.current && !handDrawn);
       autoDoneRef.current.add(key);
-      findSpacesRef.current?.(el, false);
+      if (replace) findSpacesRef.current?.(el, false, { fresh: true });
+      else if (freshPictureRef.current) setNotice("This picture still shows the spaces drawn for the previous one. Use Clear map, then Find spaces automatically, if it is a different lot.");
+      freshPictureRef.current = false;
     }
   }, []);
 
@@ -588,9 +597,10 @@ export default function LiveCamera({
 
   // Find the parking spaces automatically: painted stall lines (overhead
   // pictures) plus every parked car that is not inside a found space.
-  const findSpaces = (el = mediaRef.current(), manual = true) => {
+  const findSpaces = (el = mediaRef.current(), manual = true, { fresh = false } = {}) => {
     if (!mediaReady(el)) return;
-    const cal = calRef.current;
+    // The sample lot belongs to no picture: it is replaced entirely.
+    const cal = calRef.current.sample ? { ...calRef.current, stalls: [], lanes: [], entrance: null, exit: null, ground: null, building: null, buildings: [], footprints: [], sample: false } : calRef.current;
     const vehicles = liveRef.current.tracks.filter((t) => t.state !== "lost" && (still || t.motion !== "moving"));
     // First automatic run on an empty map: work out whether the camera looks
     // straight down or from the side.
@@ -599,7 +609,7 @@ export default function LiveCamera({
     const boxes = liveRef.current.lastBoxes || [];
     const aerialShare = boxes.length ? boxes.filter((b) => b.aerial).length / boxes.length : 0;
     const looksAerial = boxes.length >= 4 && aerialShare >= 0.6 ? "overhead" : null;
-    const view = (!manual && !cal.stalls.length && (looksAerial || guessView(vehicles))) || cal.view || "angled";
+    const view = (!manual && (fresh || !cal.stalls.length) && (looksAerial || guessView(vehicles))) || cal.view || "angled";
     try {
       const pixels = imagePixels(el);
       // Tilted camera: measure the tilt from the parked cars (unless the lot
@@ -623,7 +633,8 @@ export default function LiveCamera({
         const old = typed.find((o) => stallIoU(o, st) > 0.4);
         return old ? { ...st, kind: old.kind } : st;
       }) : result.stalls;
-      update({ stalls, lanes: result.lanes, entrance: result.entrance ?? cal.entrance, view, ground });
+      const leftovers = calRef.current.sample ? { exit: null, building: null, buildings: [], footprints: [] } : {};
+      update({ ...leftovers, stalls, lanes: result.lanes, entrance: result.entrance ?? cal.entrance, view, ground });
       const { painted, fromCars } = result.stats;
       setNotice(
         result.stalls.length
