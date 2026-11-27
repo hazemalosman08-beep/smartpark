@@ -660,7 +660,7 @@ function quadGeo(P) {
 }
 
 // Polygon {outer, holes} in lot units -> extruded solid (caps group 0, sides 1).
-function extrude(poly, height, m) {
+export function extrude(poly, height, m) {
   if (!poly?.outer || poly.outer.length < 3) return null;
   // Shape (x, -z) rotated -90° about x lies on the ground with z = lot y.
   const toShape = (ring) => ring.map((p) => new THREE.Vector2(p.x * m, -p.y * m));
@@ -698,7 +698,7 @@ function roundCorners(pts, radius) {
 }
 
 // A flat ribbon along a path (x, z), with v running along it in metres / 3.
-function ribbon(pts, width, y) {
+export function ribbon(pts, width, y) {
   const pos = [], uv = [], idx = [];
   let along = 0;
   for (let i = 0; i < pts.length; i += 1) {

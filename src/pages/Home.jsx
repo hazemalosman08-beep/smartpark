@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Camera, Image as ImageIcon, Map as MapIcon, Navigation, Radio } from "lucide-react";
 import TopBar from "@/components/SmartPark/TopBar";
 import LiveCamera from "@/components/SmartPark/LiveCamera";
@@ -20,6 +20,7 @@ import { loadPhoto, savePhoto } from "@/lib/photoStore";
 import { CameraLinkDialog, ComplexBar } from "@/components/SmartPark/SitePanel";
 
 const EMPTY_MAP = new Map();
+const CampusView = lazy(() => import("@/components/SmartPark/CampusView"));
 
 export default function Home() {
   const [tab, setTab] = useState("camera");
@@ -329,6 +330,12 @@ export default function Home() {
           </p>
         )}
       </main>
+
+      {tab === "campus" && (
+        <main className="flex flex-1 flex-col">
+          <Suspense fallback={<p className="p-6 text-sm text-neutral-400">Loading 3D…</p>}><CampusView /></Suspense>
+        </main>
+      )}
 
       {tab === "driver" && (
         <main className="flex flex-1 flex-col">
