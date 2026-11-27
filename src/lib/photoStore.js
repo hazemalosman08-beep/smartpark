@@ -24,6 +24,7 @@ async function run(mode, fn) {
   });
 }
 
-export const savePhoto = (blob) => run("readwrite", (s) => s.put(blob, KEY)).catch(() => {});
-export const loadPhoto = () => run("readonly", (s) => s.get(KEY)).catch(() => null);
-export const clearPhoto = () => run("readwrite", (s) => s.delete(KEY)).catch(() => {});
+// key: "last" (the camera picture) or "site" (the site map's aerial picture).
+export const savePhoto = (blob, key = KEY) => run("readwrite", (s) => s.put(blob, key)).catch(() => {});
+export const loadPhoto = (key = KEY) => run("readonly", (s) => s.get(key)).catch(() => null);
+export const clearPhoto = (key = KEY) => run("readwrite", (s) => s.delete(key)).catch(() => {});

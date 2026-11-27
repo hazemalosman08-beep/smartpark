@@ -14,6 +14,9 @@ import {
 } from "@/lib/vision/lot";
 import { createSimulation } from "@/lib/vision/simulation";
 import { warpFrameToPlan } from "@/lib/vision/warp";
+import { applyCameraEdit, cameraLotToSiteLot, cameraView } from "@/lib/vision/siteLink";
+import { loadPhoto, savePhoto } from "@/lib/photoStore";
+import { CameraLinkDialog, SiteBar } from "@/components/SmartPark/SitePanel";
 
 const EMPTY_MAP = new Map();
 
@@ -39,6 +42,56 @@ export default function Home() {
   useEffect(() => { saveLocalCalibration(calibration); }, [calibration]);
 
   const lot = useMemo(() => deriveLot(calibration), [calibration]);
+
+  // ------------------------------------------------------------- site map
+  // With a site map, the lot is the aerial picture's map; a linked camera sees
+  // it through its link (camera view), and what it reports lands on the site.
+  const site = calibration.site || null;
+  const [siteMode, setSiteModeState] = useState(() => { try { return localStorage.getItem("smartpark.siteMode") || "site"; } catch { return "site"; } });
+  const setSiteMode = (m) => { setSiteModeState(m); try { localStorage.setItem("smartpark.siteMode", m); } catch { /* blocked */ } };
+  const cameraMode = Boolean(site) && siteMode === "camera";
+  const link = site?.link || null;
+  const [siteImage, setSiteImage] = useState(null); // { blob, url }
+  const [openPicture, setOpenPicture] = useState(null);
+  const [linking, setLinking] = useState(false);
+  useEffect(() => {
+    if (!site) { setSiteImage(null); return undefined; }
+    let gone = false;
+    loadPhoto("site").then((blob) => { if (!gone && blob) setSiteImage((old) => { if (old) URL.revokeObjectURL(old.url); return { blob, url: URL.createObjectURL(blob) }; }); });
+    return () => { gone = true; };
+  }, [Boolean(site)]);
+  const camCal = useMemo(() => (cameraMode ? normalizeCalibration(cameraView(calibration, link)) : null), [cameraMode, calibration, link]);
+  const camLot = useMemo(() => (camCal ? deriveLot(camCal) : null), [camCal]);
+  const camRef = useRef({});
+  camRef.current = { cameraMode, camCal, camLot, lot, link, calibration };
+  // Edits made while looking through the camera go to the site map.
+  const onCameraEdit = useCallback((next) => {
+    const { camCal: before, link: lk, calibration: cal } = camRef.current;
+    if (!lk) return;
+    const r = applyCameraEdit(cal, lk, before, normalizeCalibration(next));
+    setCalibrationState(normalizeCalibration({ ...r.site, site: { ...cal.site, link: r.link } }));
+  }, []);
+  const showSite = (blob) => setOpenPicture({ blob, nonce: Date.now() });
+  // Development only: the site map and its live statuses, for automated checks.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return undefined;
+    window.__smartparkSite = () => ({ stalls: camRef.current.calibration.stalls, statuses: [...(liveRef.current.statuses || new Map()).entries()], link: camRef.current.link, mode: camRef.current.cameraMode ? "camera" : "site" });
+    return () => { delete window.__smartparkSite; };
+  }, []);
+  const makeSite = async () => {
+    const blob = await loadPhoto();
+    if (!blob) return;
+    await savePhoto(blob, "site");
+    setSiteImage({ blob, url: URL.createObjectURL(blob) });
+    setCalibration({ ...calibration, view: "overhead", site: { createdAt: new Date().toISOString(), link: null } });
+    setSiteMode("site");
+  };
+  const removeSite = () => {
+    if (!window.confirm("Remove the site map and the camera link? The spaces stay, as a single-camera map of this picture.")) return;
+    const { site: _drop, ...rest } = calibration;
+    setCalibration({ ...rest, site: null });
+    setSiteMode("site");
+  };
   const graph = useMemo(() => buildLaneGraph(lot.lanes), [lot]);
   const fromEntrance = useMemo(() => distancesFrom(graph, lot.entrance), [graph, lot]);
 
@@ -48,9 +101,22 @@ export default function Home() {
   const liveRef = useRef(live);
   liveRef.current = live;
 
-  const onLiveUpdate = useCallback((update) => {
-    if (update.frame) { setFrame(update.frame); return; }
-    if (!update.tracks) return;
+  const onLiveUpdate = useCallback((raw) => {
+    if (raw.frame) { setFrame(raw.frame); return; }
+    if (!raw.tracks) return;
+    // A linked camera: its cars are placed on the site plan.
+    const c = camRef.current;
+    let update = raw;
+    if (c.cameraMode && c.camLot && c.link) {
+      // Site spaces this camera does not see: no reading ("unknown").
+      const statuses = new Map(raw.statuses || []);
+      for (const s of c.calibration.stalls) if (!statuses.has(s.id)) statuses.set(s.id, { status: "unknown", confidence: 0 });
+      update = {
+        ...raw,
+        statuses,
+        tracks: raw.tracks.map((t) => ({ ...t, ground: t.ground ? cameraLotToSiteLot(c.camLot, c.lot, c.link, t.ground) : t.ground, trail: (t.trail || []).map((p) => cameraLotToSiteLot(c.camLot, c.lot, c.link, p)).filter(Boolean) })),
+      };
+    }
     setLive({ tracks: update.tracks, statuses: update.statuses, streaming: update.streaming, still: update.still });
     if (update.events?.length) {
       pendingEvents.current.push(...update.events);
@@ -82,10 +148,12 @@ export default function Home() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [frame, lot]);
   const backdrop = useMemo(() => {
+    // With a site map, the plan is the aerial picture, whatever the camera shows.
+    if (site && siteImage) return { href: siteImage.url, x: 0, y: 0, w: 100 * (calibration.aspect || 1.5), h: 100 };
     if (!frame || calibration.sample) return null;
     if (lot.rectified) return warped;
     return { href: frame.url, x: 0, y: 0, w: 100 * (calibration.aspect || frame.width / frame.height), h: 100 };
-  }, [frame, lot, warped, calibration.aspect, calibration.sample]);
+  }, [frame, lot, warped, calibration.aspect, calibration.sample, site, siteImage]);
 
   // ------------------------------------------------------------- simulation
   const simRef = useRef(null);
@@ -150,7 +218,7 @@ export default function Home() {
   const realStatuses = live.streaming ? live.statuses : sim.statuses;
   const counts = occupancyCounts(lot.stalls, realStatuses);
   const occupied = counts.taken;
-  const occupiedKey = lot.stalls.map((s) => (shown.statuses.get(s.id)?.status === "occupied" ? 1 : 0)).join("");
+  const occupiedKey = lot.stalls.map((s) => ({ occupied: 1, unknown: 2 }[shown.statuses.get(s.id)?.status] || 0)).join("");
   const recommended = useMemo(() => recommendStall(lot, graph, shown.statuses, lot.entrance, fromEntrance),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lot, graph, fromEntrance, occupiedKey]);
@@ -173,11 +241,36 @@ export default function Home() {
 
       {/* The camera keeps running while the plan is open, so the plan stays live. */}
       <main className={tab === "camera" ? "flex flex-1 flex-col gap-3 p-3 lg:p-4" : "hidden"}>
+        <SiteBar
+          site={site}
+          mode={siteMode}
+          onMode={(m) => { setSiteMode(m); if (m === "site" && siteImage) showSite(siteImage.blob); else if (m === "camera") setOpenPicture({ stop: true, nonce: Date.now() }); }}
+          canMakeSite={Boolean(live.still && calibration.stalls.length)}
+          onMakeSite={makeSite}
+          onRemoveSite={removeSite}
+          onLink={() => setLinking(true)}
+          linked={Boolean(link)}
+          linkError={link?.error}
+          canLink={Boolean(frame && siteImage)}
+        />
+        {linking && frame && siteImage && (
+          <CameraLinkDialog
+            cameraUrl={frame.url}
+            siteUrl={siteImage.url}
+            site={calibration}
+            initial={link}
+            cameraAspect={frame.width / frame.height}
+            onClose={() => setLinking(false)}
+            onSave={(lk) => { setCalibration({ ...calibration, site: { ...site, link: lk } }); setLinking(false); }}
+          />
+        )}
         <div className="flex min-h-[70vh] flex-1 flex-col">
           <LiveCamera
-            calibration={calibration}
-            onCalibrationChange={setCalibration}
-            lot={lot}
+            calibration={cameraMode ? camCal : calibration}
+            onCalibrationChange={cameraMode ? onCameraEdit : setCalibration}
+            lot={cameraMode ? camLot : lot}
+            mapLocked={cameraMode}
+            openPicture={openPicture}
             onUpdate={onLiveUpdate}
             assignVehicleId={vehicleSessions.assignVehicleId}
             remoteCode={remoteCode}

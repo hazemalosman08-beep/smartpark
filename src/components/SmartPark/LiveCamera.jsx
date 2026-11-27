@@ -49,6 +49,11 @@ export default function LiveCamera({
   remoteCode = "",
   onRemoteCodeChange,
   visible = true,
+  // Site mode: the spaces come from the site map (projected into this camera):
+  // automatic mapping must not replace them.
+  mapLocked = false,
+  // { blob, nonce }: open this picture (e.g. the site map's aerial photo).
+  openPicture = null,
 }) {
   const stageRef = useRef(null);
   const canvasRef = useRef(null);
@@ -97,6 +102,8 @@ export default function LiveCamera({
   const autoDoneRef = useRef(new Set()); // sources already mapped automatically
   const sourceKeyRef = useRef("");
   const freshPictureRef = useRef(false); // a picture the user just opened (maybe another lot)
+  const mapLockedRef = useRef(mapLocked);
+  mapLockedRef.current = mapLocked;
   const mapRunRef = useRef(0); // automatic searches started (the space model answers the latest)
   const sourceStartRef = useRef(0);
   const findSpacesRef = useRef(null);
@@ -121,7 +128,8 @@ export default function LiveCamera({
       stalls: calRef.current.stalls,
       statuses: [...(liveRef.current.statuses || new Map()).entries()],
       vehicles: liveRef.current.tracks.filter((t) => t.state !== "lost").length,
-      tracks: liveRef.current.tracks.map((t) => ({ id: t.vehicle_id, state: t.state, motion: t.motion, ground: Boolean(t.ground) })),
+      tracks: liveRef.current.tracks.map((t) => ({ id: t.vehicle_id, state: t.state, motion: t.motion, ground: Boolean(t.ground), box: [t.x, t.y, t.w, t.h] })),
+      cameraStalls: calRef.current.stalls.map((st) => ({ id: st.id, label: st.label, poly: st.poly })),
     });
     return () => { delete window.__smartparkLive; };
   }, []);
@@ -203,6 +211,16 @@ export default function LiveCamera({
     // Photos are kept so they come back with the lot map after a reload.
     if (!isVideo) savePhoto(file);
   };
+
+  // A picture handed in from outside (the site map's aerial photo).
+  useEffect(() => {
+    if (openPicture?.stop) { stopAll(); return; }
+    if (!openPicture?.blob) return;
+    stopAll();
+    freshPictureRef.current = false;
+    setFileUrl(URL.createObjectURL(openPicture.blob));
+    setSource("image");
+  }, [openPicture?.nonce]);
 
   // After a reload: bring back the photo the saved lot map belongs to.
   useEffect(() => {
@@ -392,7 +410,7 @@ export default function LiveCamera({
     // another lot). A map drawn by hand is kept.
     const key = sourceKeyRef.current;
     const settled = isStill || Date.now() - sourceStartRef.current > 4000;
-    if (el && settled && !autoDoneRef.current.has(key) && tracks.length) {
+    if (el && settled && !autoDoneRef.current.has(key) && tracks.length && !mapLockedRef.current) {
       const handDrawn = cal.stalls.some((st) => !st.auto);
       const replace = !cal.stalls.length || cal.sample || (freshPictureRef.current && !handDrawn);
       autoDoneRef.current.add(key);
@@ -849,7 +867,7 @@ export default function LiveCamera({
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 text-[10px] font-semibold tracking-[0.18em] text-neutral-500">AUTO</span>
-        <Btn disabled={!streaming} onClick={() => findSpaces()}><Sparkles className="h-3.5 w-3.5" /> Find spaces automatically</Btn>
+        <Btn disabled={!streaming || mapLocked} onClick={() => findSpaces()} title={mapLocked ? "Spaces come from the site map: find them on the site map" : undefined}><Sparkles className="h-3.5 w-3.5" /> Find spaces automatically</Btn>
         <span className="ml-2 text-[11px] text-neutral-400">Camera view:</span>
         <Btn active={calibration.view !== "overhead"} onClick={() => update({ view: "angled" })}>Angled</Btn>
         <Btn active={calibration.view === "overhead"} onClick={() => update({ view: "overhead" })}>Overhead</Btn>

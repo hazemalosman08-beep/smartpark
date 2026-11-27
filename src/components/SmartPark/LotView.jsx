@@ -92,7 +92,8 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
 
       {/* stalls */}
       {lot.stalls.map((s) => {
-        const st = statuses?.get(s.id);
+        // "unknown" (no camera covers it) is drawn like no reading at all.
+        const st = statuses?.get(s.id)?.status === "unknown" ? null : statuses?.get(s.id);
         const occupied = st?.status === "occupied";
         const isRec = recommended?.id === s.id;
         const isHi = highlightStall === s.label;
@@ -103,7 +104,7 @@ export default function LotView({ lot, statuses, tracks = [], recommended = null
         const labelAt = { x: s.back.x + (s.front.x - s.back.x) * 0.18, y: s.back.y + (s.front.y - s.back.y) * 0.18 };
         return (
           <g key={s.id}>
-            <title>{`${s.label} — ${occupied ? `occupied${st?.vehicle_id ? ` by ${st.vehicle_id}` : ""}` : st ? "free" : "unknown"}`}</title>
+            <title>{`${s.label} — ${occupied ? `occupied${st?.vehicle_id ? ` by ${st.vehicle_id}` : ""}` : st ? "free" : "not covered by a camera"}`}</title>
             <polygon points={pts} fill={fill} stroke={showPhoto ? (occupied ? "rgba(239,68,68,0.9)" : "rgba(74,222,128,0.9)") : "none"} strokeWidth={geometry.font * 0.08} />
             {/* painted lines: the two sides and the back, open towards the aisle */}
             {!showPhoto && <polyline points={`${s.poly[0].x},${s.poly[0].y} ${s.poly[3].x},${s.poly[3].y} ${s.poly[2].x},${s.poly[2].y} ${s.poly[1].x},${s.poly[1].y}`} fill="none" stroke={isRec || isHi ? "#4ade80" : "rgba(255,255,255,0.8)"} strokeWidth={geometry.font * (isRec || isHi ? 0.22 : 0.1)} />}

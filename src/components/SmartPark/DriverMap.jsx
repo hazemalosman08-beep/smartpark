@@ -184,6 +184,7 @@ export default function DriverMap({ lot, statuses, recommended, route = [], back
       {/* spaces */}
       {stalls.map((s) => {
         const taken = statuses?.get(s.id)?.status === "occupied";
+        const unknown = statuses?.get(s.id)?.status === "unknown";
         const isTarget = recommended?.id === s.id;
         if (s.loose && !isTarget) return s.hidden || !taken ? null : <Car key={s.id} stall={s} geo={geo} />;
         const pts = s.poly.map((p) => `${p.x},${p.y}`).join(" ");
@@ -191,13 +192,13 @@ export default function DriverMap({ lot, statuses, recommended, route = [], back
           <g key={s.id}>
             {/* the map is drawn from the picture: cover the photographed car, the drawn one takes its place */}
             {showScene && <polygon points={pts} fill={C.pave} stroke="none" />}
-            <polygon points={pts} fill={isTarget ? "rgba(74,222,128,0.35)" : taken ? C.takenFill : C.freeFill} stroke="none" />
+            <polygon points={pts} fill={isTarget ? "rgba(74,222,128,0.35)" : unknown ? "rgba(148,163,184,0.18)" : taken ? C.takenFill : C.freeFill} stroke="none" />
             {/* painted lines: both sides and the back, open to the aisle */}
             <polyline
               points={`${s.poly[0].x},${s.poly[0].y} ${s.poly[3].x},${s.poly[3].y} ${s.poly[2].x},${s.poly[2].y} ${s.poly[1].x},${s.poly[1].y}`}
               fill="none" stroke={C.line} strokeWidth={stroke} strokeLinejoin="round"
             />
-            {!taken && !isTarget && <circle cx={s.centroid.x} cy={s.centroid.y} r={font * 0.16} fill={C.free} opacity="0.85" />}
+            {!taken && !unknown && !isTarget && <circle cx={s.centroid.x} cy={s.centroid.y} r={font * 0.16} fill={C.free} opacity="0.85" />}
             {taken && <Car stall={s} geo={geo} />}
           </g>
         );

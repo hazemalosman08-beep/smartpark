@@ -39,7 +39,7 @@ export default function useGuidance({ lot, graph, fromEntrance, statuses, tracks
   if (seen) lastSeen.current = { track: seen, at: Date.now() };
   const recent = lastSeen.current && lastSeen.current.track.vehicle_id === driverId && Date.now() - lastSeen.current.at < 15000;
   const driver = seen && seen.state !== "lost" ? seen : recent ? { ...lastSeen.current.track, stale: true, lastSeenAt: lastSeen.current.at } : null;
-  const occupiedKey = lot.stalls.map((s) => (statuses?.get(s.id)?.status === "occupied" ? 1 : 0)).join("");
+  const occupiedKey = lot.stalls.map((s) => ({ occupied: 1, unknown: 2 }[statuses?.get(s.id)?.status] || 0)).join("");
   const best = useMemo(
     () => recommendStall(navLot, graph, statuses, lot.entrance, fromEntrance, { accessible }),
     [navLot, graph, fromEntrance, occupiedKey, accessible],

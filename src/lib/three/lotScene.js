@@ -393,7 +393,7 @@ export class LotScene {
     lot.stalls.forEach((s, i) => {
       const st = statuses?.get?.(s.id);
       // Gray: not checked yet or changing right now (unverified).
-      const tone = !st || st.changing ? t.unknown : st.status === "occupied" ? t.taken : s.kind === "reserved" ? t.reserved : t.free;
+      const tone = !st || st.changing || st.status === "unknown" ? t.unknown : st.status === "occupied" ? t.taken : s.kind === "reserved" ? t.reserved : t.free;
       c.set(tone);
       // Free spaces are a soft tint; taken ones stand out under their car.
       if (tone === t.free) c.lerp(new THREE.Color(t.ground), this.themeName === "dark" ? 0.45 : 0.35);

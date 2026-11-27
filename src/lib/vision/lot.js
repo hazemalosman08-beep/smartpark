@@ -523,7 +523,8 @@ export function stallCost(lot, graph, stall, distances = null) {
 // Reserved spaces are never recommended; accessible spaces only to drivers who
 // need one (and then first).
 export function recommendStall(lot, graph, statuses, from = lot.entrance, distances = null, { accessible = false, exclude = null } = {}) {
-  let free = lot.stalls.filter((s) => statuses?.get(s.id)?.status !== "occupied" && !s.blocked && s.kind !== "reserved" && !exclude?.has(s.id));
+  // A space no camera sees ("unknown") is not offered: it may be taken.
+  let free = lot.stalls.filter((s) => !["occupied", "unknown"].includes(statuses?.get(s.id)?.status) && !s.blocked && s.kind !== "reserved" && !exclude?.has(s.id));
   if (accessible) {
     const acc = free.filter((s) => s.kind === "accessible");
     if (acc.length) free = acc;
@@ -651,11 +652,18 @@ export function dedupeStalls(stalls, threshold = 0.3) {
 // The one place open/taken numbers are counted. Every screen (camera counter,
 // Lot tab, Driver screen) calls this with the same spaces and statuses, so they
 // always agree.
+// Spaces marked "unknown" (no camera covers them, e.g. a site map seen by one
+// camera) are neither open nor taken.
 export function occupancyCounts(stalls = [], statuses) {
-  let taken = 0;
-  for (const s of stalls) if (statuses?.get?.(s.id)?.status === "occupied") taken += 1;
+  let taken = 0, unknown = 0;
+  for (const s of stalls) {
+    const st = statuses?.get?.(s.id)?.status;
+    if (st === "occupied") taken += 1;
+    else if (st === "unknown") unknown += 1;
+  }
   const total = stalls.length;
-  return { total, taken, open: total - taken, percent: total ? Math.round((taken / total) * 100) : 0 };
+  const seen = total - unknown;
+  return { total, taken, open: seen - taken, unknown, percent: seen ? Math.round((taken / seen) * 100) : 0 };
 }
 
 // ---------------------------------------------------------------------------

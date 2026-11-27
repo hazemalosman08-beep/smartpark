@@ -43,7 +43,7 @@ export default function DriverView({ lot, graph, fromEntrance, statuses, tracks 
   useEffect(() => savePref("smartpark.guide.theme", theme), [theme]);
 
   const g = useGuidance({ lot, graph, fromEntrance, statuses, tracks, features, destinationId, accessible, driverId });
-  const { total, open, percent: pct } = occupancyCounts(lot.stalls, statuses);
+  const { total, open, unknown, percent: pct } = occupancyCounts(lot.stalls, statuses);
   const full = total > 0 && open === 0;
   const steps = useMemo(() => directionsFor(g.route, g.target, lot.metersPerUnit), [g.route, g.target, lot.metersPerUnit]);
   const wk = g.walkInfo;
@@ -199,6 +199,7 @@ export default function DriverView({ lot, graph, fromEntrance, statuses, tracks 
               <div className={`h-full rounded-full transition-all duration-700 ${pct >= 90 ? "bg-rose-500" : pct >= 70 ? "bg-amber-400" : "bg-emerald-500"}`} style={{ width: `${pct}%` }} />
             </div>
             <p className="mt-2 text-xs text-slate-500">{full ? "The lot is full" : `${pct}% occupied`} · {src.label.toLowerCase()}</p>
+            {unknown > 0 && <p className="mt-1 text-xs text-slate-400">{unknown} space{unknown === 1 ? "" : "s"} not covered by a camera (shown gray)</p>}
           </section>
 
           {/* trip options */}
