@@ -42,7 +42,9 @@ export class CampusScene {
     this.scene.add(this.hemi, this.sun);
     this.root = new THREE.Group();
     this.labels = new THREE.Group();
-    this.scene.add(this.root, this.labels);
+    this.trip = new THREE.Group();
+    this.scene.add(this.root, this.labels, this.trip);
+    this.tripData = null;
     this.themeName = "dark";
     this.theme = THEMES.dark;
     this.osm = null;
@@ -112,11 +114,82 @@ export class CampusScene {
     this.pickables = [];
   }
 
+  /**
+   * "Where are you going?": highlight the building, the parking options and
+   * the walk from the chosen one. trip: { building, options:[{lot, from, to}], chosen } or null.
+   */
+  setTrip(trip, { fly = true } = {}) {
+    this.tripData = trip;
+    for (const o of [...this.trip.children]) {
+      this.trip.remove(o);
+      o.traverse?.((c) => { c.geometry?.dispose?.(); const m = c.material; (Array.isArray(m) ? m : m ? [m] : []).forEach((x) => { x.map?.dispose?.(); x.dispose?.(); }); });
+    }
+    if (!trip?.building) return;
+    const b = trip.building;
+    const geo = extrude(b, b.height + 0.3, 1);
+    if (geo) {
+      // Drawn over the ordinary building (no flicker where they coincide).
+      const mat = (color, emissive) => new THREE.MeshLambertMaterial({ color, emissive, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+      this.trip.add(new THREE.Mesh(geo, [mat(0xfbbf24, 0x3a2a00), mat(0xf59e0b, 0x2a1a00)]));
+    }
+    const bc = centre(b.outer);
+    const bl = makeLabel(b.name, { bg: "#f59e0b", fg: "#1c1917" });
+    bl.sprite.position.set(bc.x, b.height + 10, bc.y);
+    bl.sprite.scale.set(bl.aspect * 0.03, 0.03, 1);
+    bl.sprite.renderOrder = 30;
+    this.trip.add(bl.sprite);
+    (trip.options || []).forEach((o, i) => {
+      const isChosen = o === trip.chosen;
+      const lot = o.lot;
+      const fill = flatGeo(lot, 1.2);
+      if (fill) {
+        const m = new THREE.Mesh(fill, new THREE.MeshBasicMaterial({ color: isChosen ? 0x22c55e : 0x4ade80, transparent: true, opacity: isChosen ? 0.8 : 0.4, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -20, polygonOffsetUnits: -20 }));
+        m.renderOrder = 20;
+        this.trip.add(m);
+      }
+      const garage = this.osm?.buildings.find((x) => x.garage && x.name && x.name === lot.name);
+      if (garage && isChosen) {
+        const g = extrude(garage, garage.height + 0.4, 1);
+        if (g) this.trip.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: 0x22c55e, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 })));
+      }
+      const c = centre(lot.outer);
+      const label = makeLabel(`${i + 1}  ${lot.name || "Parking"} · ${o.walkMinutes} min walk`, { bg: isChosen ? "#16a34a" : "#166534", fg: "#fff" });
+      label.sprite.position.set(c.x, (garage?.height || 0) + (isChosen ? 12 : 8), c.y);
+      label.sprite.scale.set(label.aspect * (isChosen ? 0.028 : 0.022), isChosen ? 0.028 : 0.022, 1);
+      label.sprite.renderOrder = isChosen ? 29 : 25;
+      label.sprite.userData.trip = o;
+      this.trip.add(label.sprite);
+    });
+    // The walk: dotted line from the chosen lot to the building.
+    const ch = trip.chosen;
+    if (ch && ch.distance > 0) {
+      // A row of footstep dots (lines are 1 px wide in WebGL: too thin to see).
+      const len = Math.hypot(ch.to.x - ch.from.x, ch.to.y - ch.from.y);
+      const n = Math.max(2, Math.round(len / 6));
+      const dots = new THREE.InstancedMesh(new THREE.CircleGeometry(1.4, 16), new THREE.MeshBasicMaterial({ color: 0xf59e0b, depthWrite: false, side: THREE.DoubleSide }), n + 1);
+      const m4 = new THREE.Matrix4(), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+      for (let k = 0; k <= n; k += 1) {
+        const t = k / n;
+        m4.compose(new THREE.Vector3(ch.from.x + (ch.to.x - ch.from.x) * t, 1.6, ch.from.y + (ch.to.y - ch.from.y) * t), q, new THREE.Vector3(1, 1, 1));
+        dots.setMatrixAt(k, m4);
+      }
+      dots.renderOrder = 28;
+      this.trip.add(dots);
+    }
+    // Ordinary labels near the trip step aside.
+    if (fly) {
+      const pts = [...b.outer, ...(ch ? ch.lot.outer : [])];
+      const xs = pts.map((p) => p.x), zs = pts.map((p) => p.y);
+      const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs));
+      this.flyTo({ x: (Math.min(...xs) + Math.max(...xs)) / 2, z: (Math.min(...zs) + Math.max(...zs)) / 2 }, Math.max(160, span * 1.5));
+    }
+  }
+
   setTheme(name) {
     if (name === this.themeName) return;
     this.themeName = name;
     this.theme = THEMES[name] || THEMES.dark;
-    if (this.osm) { this.build(); this.fitFog(); }
+    if (this.osm) { this.build(); this.fitFog(); if (this.tripData) this.setTrip(this.tripData, { fly: false }); }
   }
 
   fitFog() {
@@ -266,6 +339,11 @@ export class CampusScene {
     if (!w || !h || !this.labels.children.length) return;
     const placed = [];
     const v = new THREE.Vector3();
+    for (const sp of this.trip.children.filter((c) => c.isSprite)) {
+      v.copy(sp.position).project(this.camera);
+      const x = (v.x * 0.5 + 0.5) * w, y = (-v.y * 0.5 + 0.5) * h, lh = sp.scale.y * h, lw = sp.scale.x * h;
+      placed.push([x - lw / 2 - 4, y - lh / 2 - 3, x + lw / 2 + 4, y + lh / 2 + 3]);
+    }
     const items = [...this.labels.children].sort((a, b) => (b.userData.rank || 0) - (a.userData.rank || 0));
     for (const sp of items) {
       v.copy(sp.position).project(this.camera);
@@ -315,7 +393,8 @@ export class CampusScene {
     const r = canvas.getBoundingClientRect();
     const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
-    const hit = this.raycaster.intersectObjects([...this.pickables, ...this.labels.children], false)[0];
+    const hit = this.raycaster.intersectObjects([...this.trip.children.filter((c) => c.isSprite), ...this.pickables, ...this.labels.children], false)[0];
+    if (hit?.object?.userData?.trip) { this.onPickTrip?.(hit.object.userData.trip); return; }
     const lot = hit?.object?.userData?.lot;
     if (lot) { this.flyToLot(lot); this.onPick?.(lot); }
   }

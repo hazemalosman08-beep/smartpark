@@ -173,3 +173,83 @@ export function parkingSummary(osm) {
   const capacity = lots.reduce((s, p) => s + (p.capacity || 0), 0);
   return { lots: lots.length, garages: garages.length, surface: lots.length - garages.length, capacity, withCapacity: lots.filter((p) => p.capacity).length };
 }
+
+// ---------------------------------------------------------------------------
+// "Where are you going?": named buildings, and the parking closest to one.
+
+/** Named buildings (one entry per name; parts and garages left out), A-Z. */
+export function destinations(osm) {
+  const seen = new Map();
+  for (const b of osm.buildings) {
+    if (!b.name || b.part || b.garage) continue;
+    const key = b.name.trim().toLowerCase();
+    const area = Math.abs(polyArea(b.outer));
+    if (!seen.has(key) || seen.get(key).area < area) seen.set(key, { ...b, area });
+  }
+  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+}
+
+/** Search destinations by words in any order ("eng bldg" finds "Engineering Building"). */
+export function searchDestinations(list, text, max = 8) {
+  const words = String(text || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  return list
+    .map((d) => { const n = d.name.toLowerCase(); return { d, ok: words.every((w) => n.includes(w)), starts: n.startsWith(words[0]) }; })
+    .filter((x) => x.ok)
+    .sort((a, b) => (b.starts - a.starts) || a.d.name.length - b.d.name.length)
+    .slice(0, max)
+    .map((x) => x.d);
+}
+
+const WALK_SPEED = 1.3; // m/s
+// Streets are a grid: people walk around blocks, not in straight lines.
+const DETOUR = 1.3;
+
+/**
+ * Parking closest to a building: distance between the outlines (edge to
+ * edge), walking estimate, and the two closest points (for drawing the walk).
+ * Private lots are listed last; spaces mapped one by one are left out.
+ */
+export function nearestParking(osm, building, n = 5, { permit = true } = {}) {
+  const lots = osm.parking.filter((p) => !p.space && p.outer?.length >= 3);
+  return lots
+    .map((lot) => {
+      const { d, a, b } = polygonGap(lot.outer, building.outer);
+      const walkMeters = Math.round(d * DETOUR);
+      return { lot, distance: Math.round(d), walkMeters, walkMinutes: Math.max(1, Math.round(walkMeters / WALK_SPEED / 60)), from: a, to: b, private: /^(private|no)$/.test(lot.access || ""), permitOnly: /permit|permissive_permit/.test(lot.access || "") };
+    })
+    // Who may park: open to everyone first, then lots for a business's
+    // customers, then permit-only (unless the driver has a permit), private last.
+    .map((o) => ({ ...o, customers: /customers|destination/.test(o.lot.access || ""), tier: o.private ? 3 : o.permitOnly && !permit ? 2 : /customers|destination/.test(o.lot.access || "") ? 1 : 0 }))
+    .sort((x, y) => x.tier - y.tier || x.distance - y.distance)
+    .slice(0, n);
+}
+
+function polyArea(p) {
+  let s = 0;
+  for (let i = 0, j = p.length - 1; i < p.length; j = i, i += 1) s += p[j].x * p[i].y - p[i].x * p[j].y;
+  return s / 2;
+}
+
+// Smallest distance between two polygons (0 if they touch or overlap), and
+// the closest pair of points.
+function polygonGap(A, B) {
+  if (A.some((p) => inside(p, B)) || B.some((p) => inside(p, A))) {
+    const c = A.find((p) => inside(p, B)) || B.find((p) => inside(p, A));
+    return { d: 0, a: c, b: c };
+  }
+  let best = { d: Infinity, a: A[0], b: B[0] };
+  const scan = (P, Q, swap) => {
+    for (const p of P) for (let i = 0; i < Q.length; i += 1) {
+      const q0 = Q[i], q1 = Q[(i + 1) % Q.length];
+      const dx = q1.x - q0.x, dy = q1.y - q0.y, L = dx * dx + dy * dy || 1e-9;
+      const t = Math.max(0, Math.min(1, ((p.x - q0.x) * dx + (p.y - q0.y) * dy) / L));
+      const c = { x: q0.x + dx * t, y: q0.y + dy * t };
+      const d = Math.hypot(p.x - c.x, p.y - c.y);
+      if (d < best.d) best = swap ? { d, a: c, b: p } : { d, a: p, b: c };
+    }
+  };
+  scan(A, B, false);
+  scan(B, A, true);
+  return best;
+}

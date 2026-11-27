@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Building2, Car, Crosshair, FileUp, Loader2, Moon, Search, Sun } from "lucide-react";
-import { ATTRIBUTION, fetchArea, findPlaces, parseOsm, parkingSummary } from "@/lib/osm";
+import { Building2, Car, Crosshair, FileUp, Footprints, Loader2, MapPin, Moon, Search, Sun, X } from "lucide-react";
+import { ATTRIBUTION, destinations, fetchArea, findPlaces, nearestParking, parkingSummary, parseOsm, searchDestinations } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { loadPhoto, savePhoto } from "@/lib/photoStore";
 
@@ -17,6 +17,11 @@ export default function CampusView() {
   const [osm, setOsm] = useState(null);
   const [picked, setPicked] = useState(null);
   const [theme, setTheme] = useState("dark");
+  // "Where are you going?"
+  const [goText, setGoText] = useState("");
+  const [goOpen, setGoOpen] = useState(false);
+  const [trip, setTrip] = useState(null); // { building, options, chosen }
+  const [permit, setPermit] = useState(() => { try { return localStorage.getItem("smartpark.permit") === "1"; } catch { return false; } });
 
   useEffect(() => {
     const e = new CampusScene(canvasRef.current, { onPick: setPicked });
@@ -30,7 +35,23 @@ export default function CampusView() {
     loadPhoto("osm").then(async (blob) => { if (blob) { try { setOsm(JSON.parse(await blob.text())); } catch { /* ignore */ } } });
     return () => { ro.disconnect(); e.dispose(); };
   }, []);
-  useEffect(() => { if (osm) engine.current?.setData(osm); }, [osm]);
+  useEffect(() => { if (osm) { engine.current?.setData(osm); setTrip(null); setGoText(""); } }, [osm]);
+  useEffect(() => { engine.current?.setTrip(trip, { fly: trip?.fly !== false }); }, [trip]);
+  useEffect(() => { if (engine.current) engine.current.onPickTrip = (o) => setTrip((t) => (t ? { ...t, chosen: o, fly: false } : t)); }, []);
+  // Changing the permit switch re-ranks the current trip.
+  useEffect(() => {
+    try { localStorage.setItem("smartpark.permit", permit ? "1" : "0"); } catch { /* blocked */ }
+    setTrip((t) => { if (!t || !osm) return t; const options = nearestParking(osm, t.building, 5, { permit }); return { ...t, options, chosen: options[0] || null }; });
+  }, [permit, osm]);
+  const buildingsList = useMemo(() => (osm ? destinations(osm) : []), [osm]);
+  const suggestions = useMemo(() => searchDestinations(buildingsList, goText), [buildingsList, goText]);
+  const goTo = (building) => {
+    const options = nearestParking(osm, building, 5, { permit });
+    setTrip({ building, options, chosen: options[0] || null });
+    setGoText(building.name);
+    setGoOpen(false);
+    setPicked(null);
+  };
   useEffect(() => { engine.current?.setTheme(theme); }, [theme]);
 
   const keep = (data) => { setOsm(data); setPicked(null); savePhoto(new Blob([JSON.stringify(data)], { type: "application/json" }), "osm"); };
@@ -89,6 +110,53 @@ export default function CampusView() {
               <button key={p.id} onClick={() => load(p)} className="block w-full rounded px-2 py-1.5 text-left text-neutral-200 hover:bg-white/5">{p.name} <span className="text-neutral-500">· {p.kind}</span></button>
             ))}
           </div>
+        )}
+        {osm && (
+          <section className="rounded-xl border border-amber-500/30 bg-amber-500/[0.06] p-3">
+            <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-amber-100"><MapPin className="h-4 w-4 text-amber-300" /> Where are you going?</p>
+            <div className="relative">
+              <input
+                value={goText}
+                onChange={(e) => { setGoText(e.target.value); setGoOpen(true); }}
+                onFocus={() => setGoOpen(true)}
+                onKeyDown={(e) => { if (e.key === "Enter" && suggestions[0]) goTo(suggestions[0]); if (e.key === "Escape") setGoOpen(false); }}
+                placeholder={buildingsList.length ? `Building name (${buildingsList.length} on this map)` : "No named buildings on this map"}
+                className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-2.5 py-2 pr-8 text-sm text-white"
+              />
+              {goText && <button onClick={() => { setGoText(""); setTrip(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white" aria-label="Clear"><X className="h-4 w-4" /></button>}
+              {goOpen && suggestions.length > 0 && goText !== trip?.building?.name && (
+                <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 shadow-xl">
+                  {suggestions.map((d) => (
+                    <button key={d.id} onClick={() => goTo(d)} className="block w-full truncate px-2.5 py-1.5 text-left text-sm text-neutral-200 hover:bg-white/10">{d.name}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {trip && (
+              <div className="mt-3 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] uppercase tracking-wider text-neutral-500">Closest parking</p>
+                  <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-neutral-300">
+                    <input type="checkbox" checked={permit} onChange={(e) => setPermit(e.target.checked)} className="h-3.5 w-3.5 accent-amber-400" /> I have a parking permit
+                  </label>
+                </div>
+                {trip.options.map((o, i) => (
+                  <button key={o.lot.id} onClick={() => setTrip({ ...trip, chosen: o, fly: true })}
+                    className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm ring-1 ${o === trip.chosen ? "bg-green-500/15 text-white ring-green-400/50" : "text-neutral-200 ring-white/5 hover:bg-white/5"}`}>
+                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${o === trip.chosen ? "bg-green-500 text-white" : "bg-white/10"}`}>{i + 1}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className={`block truncate font-medium ${o.permitOnly && !permit ? "text-neutral-400" : ""}`}>{o.lot.name || (/multi/.test(o.lot.kind) ? "Parking structure" : "Unnamed lot")}</span>
+                      <span className="block text-[11px] text-neutral-400">
+                        {/multi|underground/.test(o.lot.kind) ? "Garage" : "Surface lot"}{o.lot.capacity ? ` · ${o.lot.capacity} spaces` : ""}{o.private ? " · private" : o.permitOnly ? " · permit only" : o.customers ? " · customers only" : o.lot.access && !/^(yes|public)$/.test(o.lot.access) ? ` · ${o.lot.access}` : ""}{o.lot.fee === "yes" ? " · paid" : ""}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-right text-xs leading-tight text-amber-200"><Footprints className="ml-auto h-3.5 w-3.5" />{o.walkMinutes} min<br /><span className="text-neutral-500">{o.walkMeters} m</span></span>
+                  </button>
+                ))}
+                <p className="pt-1 text-[11px] text-neutral-500">Ranked by walking distance (estimated). Free spaces appear here once the lots&apos; cameras are connected.</p>
+              </div>
+            )}
+          </section>
         )}
         {osm && (
           <>
