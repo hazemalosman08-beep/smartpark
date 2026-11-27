@@ -13,10 +13,11 @@ import {
   routeToStall, sampleCalibration,
 } from "@/lib/vision/lot";
 import { createSimulation } from "@/lib/vision/simulation";
-import { composeSiteWithCamera, warpFrameToPlan } from "@/lib/vision/warp";
-import { applyCameraEdit, cameraLotToSiteLot, cameraView } from "@/lib/vision/siteLink";
+import { warpFrameToPlan } from "@/lib/vision/warp";
+import { cameraLotToSiteLot } from "@/lib/vision/siteLink";
+import { areaCounts, complexStatuses, complexCalibration, loadComplex, newCamera, saveComplex } from "@/lib/complex";
 import { loadPhoto, savePhoto } from "@/lib/photoStore";
-import { CameraLinkDialog, SiteBar } from "@/components/SmartPark/SitePanel";
+import { CameraLinkDialog, ComplexBar } from "@/components/SmartPark/SitePanel";
 
 const EMPTY_MAP = new Map();
 
@@ -43,72 +44,90 @@ export default function Home() {
 
   const lot = useMemo(() => deriveLot(calibration), [calibration]);
 
-  // ------------------------------------------------------------- site map
-  // With a site map, the lot is the aerial picture's map; a linked camera sees
-  // it through its link (camera view), and what it reports lands on the site.
-  const site = calibration.site || null;
-  const [siteMode, setSiteModeState] = useState(() => { try { return localStorage.getItem("smartpark.siteMode") || "site"; } catch { return "site"; } });
-  const setSiteMode = (m) => { setSiteModeState(m); try { localStorage.setItem("smartpark.siteMode", m); } catch { /* blocked */ } };
-  const cameraMode = Boolean(site) && siteMode === "camera";
-  const link = site?.link || null;
-  const [siteImage, setSiteImage] = useState(null); // { blob, url }
+  // ------------------------------------------------------------- complex
+  // Optional, for big places: a satellite picture of the whole complex,
+  // animated in 3D, with every camera's lot placed on it. Each camera works
+  // as a normal SmartPark camera; the calibration being edited is the active
+  // camera's.
+  const [complex, setComplexState] = useState(() => loadComplex());
+  const setComplex = useCallback((next) => { setComplexState(next); saveComplex(next); }, []);
+  const [satellite, setSatellite] = useState(null); // { blob, url }
   const [openPicture, setOpenPicture] = useState(null);
   const [linking, setLinking] = useState(false);
+  const hasComplex = Boolean(complex);
   useEffect(() => {
-    if (!site) { setSiteImage(null); return undefined; }
+    if (!hasComplex) { setSatellite(null); return undefined; }
     let gone = false;
-    loadPhoto("site").then((blob) => { if (!gone && blob) setSiteImage((old) => { if (old) URL.revokeObjectURL(old.url); return { blob, url: URL.createObjectURL(blob) }; }); });
+    loadPhoto("complex").then((blob) => { if (!gone && blob) setSatellite((old) => { if (old) URL.revokeObjectURL(old.url); return { blob, url: URL.createObjectURL(blob) }; }); });
     return () => { gone = true; };
-  }, [Boolean(site)]);
-  // One combined picture: the satellite picture with the linked camera's live
-  // view projected onto the ground it covers. Redrawn at most every 3 s.
-  const [combined, setCombined] = useState(null); // { url, at }
-  const composing = useRef(false);
-  useEffect(() => {
-    if (!site || !siteImage || !link?.H || siteMode !== "camera" || !frame) return;
-    if (composing.current || (combined && Date.now() - combined.at < 3000)) return;
-    composing.current = true;
-    composeSiteWithCamera(siteImage.url, frame.url, link.H)
-      .then((url) => { if (url) setCombined((old) => { if (old) setTimeout(() => URL.revokeObjectURL(old.url), 4000); return { url, at: Date.now() }; }); })
-      .catch(() => {})
-      .finally(() => { composing.current = false; });
-  }, [site, siteImage, link, siteMode, frame, combined]);
-  useEffect(() => { if (!link) setCombined(null); }, [link]);
-  // Development only: the combined picture, for automated checks.
-  useEffect(() => { if (import.meta.env.DEV) window.__smartparkCombined = combined?.url || null; }, [combined]);
-
-  const camCal = useMemo(() => (cameraMode ? normalizeCalibration(cameraView(calibration, link)) : null), [cameraMode, calibration, link]);
-  const camLot = useMemo(() => (camCal ? deriveLot(camCal) : null), [camCal]);
-  const camRef = useRef({});
-  camRef.current = { cameraMode, camCal, camLot, lot, link, calibration };
-  // Edits made while looking through the camera go to the site map.
-  const onCameraEdit = useCallback((next) => {
-    const { camCal: before, link: lk, calibration: cal } = camRef.current;
-    if (!lk) return;
-    const r = applyCameraEdit(cal, lk, before, normalizeCalibration(next));
-    setCalibrationState(normalizeCalibration({ ...r.site, site: { ...cal.site, link: r.link } }));
-  }, []);
-  const showSite = (blob) => setOpenPicture({ blob, nonce: Date.now() });
-  // Development only: the site map and its live statuses, for automated checks.
-  useEffect(() => {
-    if (!import.meta.env.DEV) return undefined;
-    window.__smartparkSite = () => ({ stalls: camRef.current.calibration.stalls, statuses: [...(liveRef.current.statuses || new Map()).entries()], link: camRef.current.link, mode: camRef.current.cameraMode ? "camera" : "site" });
-    return () => { delete window.__smartparkSite; };
-  }, []);
-  const makeSite = async () => {
-    const blob = await loadPhoto();
-    if (!blob) return;
-    await savePhoto(blob, "site");
-    setSiteImage({ blob, url: URL.createObjectURL(blob) });
-    setCalibration({ ...calibration, view: "overhead", site: { createdAt: new Date().toISOString(), link: null } });
-    setSiteMode("site");
+  }, [hasComplex]);
+  const activeCam = complex?.cameras?.find((c) => c.id === complex.activeId) || null;
+  const complexRef = useRef({});
+  complexRef.current = { complex, activeCam, calibration };
+  const addSatellite = async (file) => {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image(); img.src = url; await img.decode();
+    await savePhoto(file, "complex");
+    setSatellite({ blob: file, url });
+    // The lot already mapped becomes the complex's first camera.
+    const first = newCamera("Camera 1", calibration);
+    setComplex({ version: 1, aspect: img.naturalWidth / img.naturalHeight, cameras: [first], activeId: first.id });
   };
-  const removeSite = () => {
-    if (!window.confirm("Remove the site map and the camera link? The spaces stay, as a single-camera map of this picture.")) return;
-    const { site: _drop, ...rest } = calibration;
-    setCalibration({ ...rest, site: null });
-    setSiteMode("site");
+  const removeComplex = () => {
+    if (!window.confirm("Remove the satellite picture? Every camera keeps working on its own; the camera on screen stays.")) return;
+    setComplex(null);
   };
+  // Switch camera: the current camera's map, picture and last reading are
+  // kept; the other camera's map and picture come back.
+  const switchCamera = async (id) => {
+    const c = complexRef.current.complex;
+    if (!c || id === c.activeId) return;
+    const snapshot = liveRef.current.streaming && liveRef.current.statuses?.size ? { at: Date.now(), statuses: [...liveRef.current.statuses.entries()] } : undefined;
+    const cameras = c.cameras.map((cam) => (cam.id === c.activeId ? { ...cam, calibration, ...(snapshot ? { snapshot } : {}) } : cam));
+    const photo = await loadPhoto();
+    if (photo && c.activeId) await savePhoto(photo, `cam:${c.activeId}`);
+    const next = cameras.find((cam) => cam.id === id);
+    setComplex({ ...c, cameras, activeId: id });
+    setCalibrationState(normalizeCalibration(next.calibration));
+    const blob = await loadPhoto(`cam:${id}`);
+    if (blob) { await savePhoto(blob); setOpenPicture({ blob, nonce: Date.now() }); } else setOpenPicture({ stop: true, nonce: Date.now() });
+  };
+  const addCamera = async () => {
+    const c = complexRef.current.complex;
+    const name = window.prompt("Name of this camera's lot (e.g. North lot)", `Camera ${c.cameras.length + 1}`);
+    if (name === null) return;
+    const cam = newCamera(name || `Camera ${c.cameras.length + 1}`);
+    const withNew = { ...c, cameras: [...c.cameras, cam] };
+    setComplex(withNew);
+    complexRef.current.complex = withNew;
+    await switchCamera(cam.id);
+  };
+  const renameCamera = (id) => {
+    const c = complexRef.current.complex;
+    const cam = c.cameras.find((x) => x.id === id);
+    const name = window.prompt("Name of this camera's lot", cam?.name || "");
+    if (name) setComplex({ ...c, cameras: c.cameras.map((x) => (x.id === id ? { ...x, name: name.slice(0, 24) } : x)) });
+  };
+  const saveLink = (link) => {
+    const c = complexRef.current.complex;
+    setComplex({ ...c, cameras: c.cameras.map((x) => (x.id === c.activeId ? { ...x, link, calibration } : x)) });
+    setLinking(false);
+  };
+  // The active camera's map is kept in the complex as it changes.
+  useEffect(() => {
+    const c = complexRef.current.complex;
+    if (!c?.activeId) return;
+    const t = setTimeout(() => setComplex({ ...c, cameras: c.cameras.map((x) => (x.id === c.activeId ? { ...x, calibration } : x)) }), 800);
+    return () => clearTimeout(t);
+  }, [calibration, setComplex]);
+  // The whole complex as one map (satellite %), with occupancy.
+  const complexView = useMemo(() => {
+    if (!complex || !activeCam) return null;
+    const { calibration: cal, areas } = complexCalibration(complex, { id: activeCam.id, calibration });
+    if (!cal.stalls.length) return null;
+    return { calibration: cal, lot: deriveLot(cal), areas };
+  }, [complex, activeCam, calibration]);
   const graph = useMemo(() => buildLaneGraph(lot.lanes), [lot]);
   const fromEntrance = useMemo(() => distancesFrom(graph, lot.entrance), [graph, lot]);
 
@@ -121,19 +140,7 @@ export default function Home() {
   const onLiveUpdate = useCallback((raw) => {
     if (raw.frame) { setFrame(raw.frame); return; }
     if (!raw.tracks) return;
-    // A linked camera: its cars are placed on the site plan.
-    const c = camRef.current;
-    let update = raw;
-    if (c.cameraMode && c.camLot && c.link) {
-      // Site spaces this camera does not see: no reading ("unknown").
-      const statuses = new Map(raw.statuses || []);
-      for (const s of c.calibration.stalls) if (!statuses.has(s.id)) statuses.set(s.id, { status: "unknown", confidence: 0 });
-      update = {
-        ...raw,
-        statuses,
-        tracks: raw.tracks.map((t) => ({ ...t, ground: t.ground ? cameraLotToSiteLot(c.camLot, c.lot, c.link, t.ground) : t.ground, trail: (t.trail || []).map((p) => cameraLotToSiteLot(c.camLot, c.lot, c.link, p)).filter(Boolean) })),
-      };
-    }
+    const update = raw;
     setLive({ tracks: update.tracks, statuses: update.statuses, streaming: update.streaming, still: update.still });
     if (update.events?.length) {
       pendingEvents.current.push(...update.events);
@@ -165,13 +172,10 @@ export default function Home() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [frame, lot]);
   const backdrop = useMemo(() => {
-    // With a site map, the plan is the aerial picture, whatever the camera shows.
-    // The combined picture (satellite + live camera) once a camera is linked.
-    if (site && siteImage) return { href: combined?.url || siteImage.url, x: 0, y: 0, w: 100 * (calibration.aspect || 1.5), h: 100 };
     if (!frame || calibration.sample) return null;
     if (lot.rectified) return warped;
     return { href: frame.url, x: 0, y: 0, w: 100 * (calibration.aspect || frame.width / frame.height), h: 100 };
-  }, [frame, lot, warped, calibration.aspect, calibration.sample, site, siteImage, combined]);
+  }, [frame, lot, warped, calibration.aspect, calibration.sample]);
 
   // ------------------------------------------------------------- simulation
   const simRef = useRef(null);
@@ -245,7 +249,30 @@ export default function Home() {
   // traffic; where the numbers come from is shown on it.
   const driverSource = live.streaming ? (live.still ? "photo" : "live") : "simulated";
   const driverTracks = useMemo(() => (live.streaming ? live.tracks.filter((t) => t.ground && t.vehicle_id) : []), [live]);
-  const { scene, features, rect: sceneRect } = useScene(tab === "driver" ? backdrop : null, lot);
+  // A complex: the Driver tab shows the whole complex on the satellite map.
+  const complexLive = useMemo(() => {
+    if (!complexView) return null;
+    const { statuses, sources } = complexStatuses(complex, complexView.calibration, live.streaming ? { cameraId: complex.activeId, statuses: live.statuses } : null);
+    const cam = activeCam?.link?.H ? activeCam : null;
+    const tracks = cam && live.streaming
+      ? driverTracks.map((t) => ({ ...t, ground: cameraLotToSiteLot(lot, complexView.lot, cam.link, t.ground) })).filter((t) => t.ground)
+      : [];
+    return { statuses, sources, tracks, areas: areaCounts(complexView.areas, statuses) };
+  }, [complexView, complex, live, activeCam, driverTracks, lot]);
+  const complexGraph = useMemo(() => (complexView ? buildLaneGraph(complexView.lot.lanes) : null), [complexView]);
+  const complexFrom = useMemo(() => (complexView ? distancesFrom(complexGraph, complexView.lot.entrance) : null), [complexView, complexGraph]);
+  const complexBackdrop = useMemo(() => (complexView && satellite ? { href: satellite.url, x: 0, y: 0, w: 100 * (complex.aspect || 1.5), h: 100 } : null), [complexView, satellite, complex?.aspect]);
+  const showComplex = Boolean(complexView && complexBackdrop);
+  const areasKey = JSON.stringify(complexLive?.areas?.map((a) => [a.open, a.taken, a.unknown]) || []);
+  const driverLot = useMemo(() => (showComplex ? { ...complexView.lot, campus: true, areas: complexLive.areas } : lot),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [showComplex, complexView, lot, areasKey]);
+  const { scene, features, rect: sceneRect } = useScene(tab === "driver" ? (showComplex ? complexBackdrop : backdrop) : null, driverLot);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return undefined;
+    window.__smartparkComplex = () => ({ stalls: complexView?.calibration.stalls || [], statuses: [...(complexLive?.statuses || new Map()).entries()], areas: complexLive?.areas || [] });
+    return () => { delete window.__smartparkComplex; };
+  }, [complexView, complexLive]);
   const lotTracks = useMemo(() => shown.tracks.filter((t) => t.ground && t.vehicle_id), [shown.tracks]);
   const selectedTrack = lotTracks.find((t) => t.key === selected);
 
@@ -259,35 +286,35 @@ export default function Home() {
 
       {/* The camera keeps running while the plan is open, so the plan stays live. */}
       <main className={tab === "camera" ? "flex flex-1 flex-col gap-3 p-3 lg:p-4" : "hidden"}>
-        <SiteBar
-          site={site}
-          mode={siteMode}
-          onMode={(m) => { setSiteMode(m); if (m === "site" && siteImage) showSite(siteImage.blob); else if (m === "camera") setOpenPicture({ stop: true, nonce: Date.now() }); }}
-          canMakeSite={Boolean(live.still && calibration.stalls.length)}
-          onMakeSite={makeSite}
-          onRemoveSite={removeSite}
+        <ComplexBar
+          complex={complex}
+          activeId={complex?.activeId}
+          onAddSatellite={addSatellite}
+          onRemove={removeComplex}
+          onSwitch={switchCamera}
+          onAddCamera={addCamera}
+          onRename={renameCamera}
           onLink={() => setLinking(true)}
-          linked={Boolean(link)}
-          linkError={link?.error}
-          canLink={Boolean(frame && siteImage)}
+          canLink={Boolean(frame && satellite && calibration.stalls.length)}
+          onShow={() => setTab("driver")}
         />
-        {linking && frame && siteImage && (
+        {linking && frame && satellite && (
           <CameraLinkDialog
             cameraUrl={frame.url}
-            siteUrl={siteImage.url}
-            site={calibration}
-            initial={link}
+            siteUrl={satellite.url}
+            cameraStalls={calibration.stalls}
+            otherStalls={(complexView?.calibration.stalls || []).filter((s) => s.camera !== complex?.activeId)}
+            initial={activeCam?.link}
             cameraAspect={frame.width / frame.height}
             onClose={() => setLinking(false)}
-            onSave={(lk) => { setCalibration({ ...calibration, site: { ...site, link: lk } }); setLinking(false); }}
+            onSave={saveLink}
           />
         )}
         <div className="flex min-h-[70vh] flex-1 flex-col">
           <LiveCamera
-            calibration={cameraMode ? camCal : calibration}
-            onCalibrationChange={cameraMode ? onCameraEdit : setCalibration}
-            lot={cameraMode ? camLot : lot}
-            mapLocked={cameraMode}
+            calibration={calibration}
+            onCalibrationChange={setCalibration}
+            lot={lot}
             openPicture={openPicture}
             onUpdate={onLiveUpdate}
             assignVehicleId={vehicleSessions.assignVehicleId}
@@ -305,15 +332,15 @@ export default function Home() {
 
       {tab === "driver" && (
         <main className="flex flex-1 flex-col">
-          {lot.stalls.length ? (
+          {lot.stalls.length || showComplex ? (
             <DriverView
-              lot={lot}
-              graph={graph}
-              fromEntrance={fromEntrance}
-              statuses={realStatuses}
-              tracks={driverTracks}
+              lot={driverLot}
+              graph={showComplex ? complexGraph : graph}
+              fromEntrance={showComplex ? complexFrom : fromEntrance}
+              statuses={showComplex ? complexLive.statuses : realStatuses}
+              tracks={showComplex ? complexLive.tracks : driverTracks}
               source={driverSource}
-              backdrop={backdrop}
+              backdrop={showComplex ? complexBackdrop : backdrop}
               scene={scene}
               features={features}
               sceneRect={sceneRect}

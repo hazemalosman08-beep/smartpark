@@ -332,6 +332,14 @@ export class LotScene {
       g.add(plane);
     }
 
+    // A complex: one label per lot with how many spaces are free.
+    for (const a of lot.areas || []) {
+      const known = a.total - a.unknown;
+      const text = known ? `${a.name}  ${a.open} free / ${a.total}` : `${a.name}  no camera reading`;
+      const bg = !known ? "#475569" : a.open === 0 ? "#dc2626" : a.open / known < 0.1 ? "#ea580c" : a.open / known < 0.3 ? "#d97706" : "#16a34a";
+      this.addPin({ x: a.x * (lot.calibration?.aspect || 1), y: a.y }, text, { bg, fg: "#fff", height: 6 });
+    }
+
     // Entrance and buildings (destinations).
     if (lot.entrance) this.addPin(lot.entrance, "ENTRANCE", { bg: this.themeName === "dark" ? "#e2e8f0" : "#0f172a", fg: this.themeName === "dark" ? "#0f172a" : "#fff", height: 3 });
     for (const bld of lot.buildings || []) {
@@ -481,7 +489,9 @@ export class LotScene {
 
   // ------------------------------------------------------------- cameras
   lotBox() {
-    const { lot } = this.data;
+    const { lot, rect } = this.data;
+    // A whole complex: frame the whole satellite picture.
+    if (lot.campus && rect) return { minX: rect.x * this.m, maxX: (rect.x + rect.w) * this.m, minZ: rect.y * this.m, maxZ: (rect.y + rect.h) * this.m };
     const pts = lot.stalls.length ? lot.stalls.flatMap((s) => s.poly) : [{ x: lot.bounds.x, y: lot.bounds.y }, { x: lot.bounds.x + lot.bounds.w, y: lot.bounds.y + lot.bounds.h }];
     if (lot.entrance) pts.push(lot.entrance);
     const xs = pts.map((p) => p.x * this.m), zs = pts.map((p) => p.y * this.m);
