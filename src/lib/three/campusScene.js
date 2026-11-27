@@ -76,6 +76,7 @@ export class CampusScene {
         if (f.t >= 1) this.flight = null;
       }
       this.controls.update();
+      if (t - (this.lastDeclutter || 0) > 150) { this.lastDeclutter = t; this.declutter(); }
       this.renderer.render(this.scene, this.camera);
     };
     this.raf = requestAnimationFrame(loop);
@@ -115,7 +116,12 @@ export class CampusScene {
     if (name === this.themeName) return;
     this.themeName = name;
     this.theme = THEMES[name] || THEMES.dark;
-    if (this.osm) this.build();
+    if (this.osm) { this.build(); this.fitFog(); }
+  }
+
+  fitFog() {
+    const d = this.camera.position.distanceTo(this.controls.target);
+    if (this.scene.fog) { this.scene.fog.near = Math.max(6000, d * 2.5); this.scene.fog.far = Math.max(20000, d * 6); }
   }
 
   setData(osm, { fit = true } = {}) {
@@ -129,7 +135,8 @@ export class CampusScene {
     const t = this.theme, osm = this.osm;
     if (!osm) return;
     this.scene.background = new THREE.Color(t.bg);
-    this.scene.fog = new THREE.Fog(t.bg, 2500, 9000);
+    // Fog far beyond what is in view (set from the view distance in fit()).
+    this.scene.fog = new THREE.Fog(t.bg, 6000, 20000);
     this.hemi.color.set(t.hemi[0]); this.hemi.groundColor.set(t.hemi[1]); this.hemi.intensity = t.hemi[2];
     this.sun.intensity = t.sun;
     const box = this.extent();
@@ -237,16 +244,38 @@ export class CampusScene {
     }
 
     // Labels: every parking lot and garage (P + name).
-    for (const lot of osm.parking.filter((p) => !p.space)) {
+    // Named lots and garages only: hundreds of "Parking" labels hide the map.
+    for (const lot of osm.parking.filter((p) => !p.space && p.name)) {
       const c = centre(lot.outer);
       const garage = /multi|underground|rooftop/.test(lot.kind);
       const bld = garage ? osm.buildings.find((b) => b.garage && b.name === lot.name) : null;
       const text = `P ${lot.name || (garage ? "Parking structure" : "Parking")}${lot.capacity ? ` · ${lot.capacity}` : ""}`;
       const label = makeLabel(text, { bg: this.theme.lotLabel, fg: "#fff" });
       label.sprite.position.set(c.x, (bld?.height || 0) + 8, c.y);
-      label.sprite.scale.set(label.aspect * 0.03, 0.03, 1);
+      label.sprite.scale.set(label.aspect * 0.025, 0.025, 1);
       label.sprite.userData.lot = lot;
+      label.sprite.userData.rank = (garage ? 2000 : 0) + (lot.capacity || 0);
       this.labels.add(label.sprite);
+    }
+  }
+
+  // Labels that would overlap on screen are hidden; bigger lots and garages
+  // win. Zooming in shows more of them.
+  declutter() {
+    const w = this.renderer.domElement.clientWidth, h = this.renderer.domElement.clientHeight;
+    if (!w || !h || !this.labels.children.length) return;
+    const placed = [];
+    const v = new THREE.Vector3();
+    const items = [...this.labels.children].sort((a, b) => (b.userData.rank || 0) - (a.userData.rank || 0));
+    for (const sp of items) {
+      v.copy(sp.position).project(this.camera);
+      const x = (v.x * 0.5 + 0.5) * w, y = (-v.y * 0.5 + 0.5) * h;
+      const lh = sp.scale.y * h, lw = sp.scale.x * h;
+      const box = [x - lw / 2 - 4, y - lh / 2 - 3, x + lw / 2 + 4, y + lh / 2 + 3];
+      const onScreen = v.z < 1 && x > -lw && x < w + lw && y > -lh && y < h + lh;
+      const free = onScreen && !placed.some((q) => box[0] < q[2] && q[0] < box[2] && box[1] < q[3] && q[1] < box[3]);
+      sp.visible = free;
+      if (free) placed.push(box);
     }
   }
 
@@ -262,6 +291,9 @@ export class CampusScene {
     const b = this.extent();
     // Far enough that the whole complex fits, seen tilted.
     const dist = Math.max(b.w / Math.max(0.6, this.camera.aspect), b.h) * 1.4 + 60;
+    if (this.scene.fog) { this.scene.fog.near = dist * 2.5; this.scene.fog.far = dist * 6; }
+    this.camera.far = Math.max(20000, dist * 8);
+    this.camera.updateProjectionMatrix();
     this.flyTo({ x: b.cx, z: b.cz }, Math.max(150, dist), snap);
   }
 

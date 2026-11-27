@@ -56,23 +56,23 @@ export default function CampusView() {
     setBusy("");
   };
   // An Overpass JSON file (e.g. exported from overpass-turbo.eu).
-  const openFile = async (file) => {
+  const openFile = async (file, name = null) => {
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
       const pts = (data.elements || []).flatMap((el) => el.geometry || (el.lat ? [el] : []) || []).filter((g) => g && Number.isFinite(g.lat));
       if (!pts.length) throw new Error("No map data in this file");
       const bounds = { minlat: Math.min(...pts.map((g) => g.lat)), maxlat: Math.max(...pts.map((g) => g.lat)), minlon: Math.min(...pts.map((g) => g.lon)), maxlon: Math.max(...pts.map((g) => g.lon)) };
-      keep({ ...parseOsm(data, bounds), bounds, name: file.name.replace(/\.json$/i, ""), fetchedAt: new Date().toISOString() });
+      keep({ ...parseOsm(data, bounds), bounds, name: name || file.name.replace(/\.json$/i, ""), fetchedAt: new Date().toISOString() });
     } catch (err) { setError(err.message || "Could not read the file"); }
   };
 
   const summary = useMemo(() => (osm ? parkingSummary(osm) : null), [osm]);
-  const lots = useMemo(() => (osm ? osm.parking.filter((p) => !p.space).sort((a, b) => (a.name || "~").localeCompare(b.name || "~", undefined, { numeric: true })) : []), [osm]);
+  const lots = useMemo(() => (osm ? osm.parking.filter((p) => !p.space).sort((a, b) => (!a.name - !b.name) || (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }) || (b.capacity || 0) - (a.capacity || 0)) : []), [osm]);
 
   return (
-    <div className="flex flex-1 flex-col gap-3 p-3 lg:flex-row lg:p-4">
-      <aside className="flex flex-col gap-3 lg:w-[330px] lg:shrink-0">
+    <div className="flex flex-1 flex-col gap-3 p-3 lg:flex-row lg:items-start lg:p-4">
+      <aside className="flex min-h-0 flex-col gap-3 lg:w-[330px] lg:shrink-0">
         <form onSubmit={search} className="flex gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
@@ -102,7 +102,7 @@ export default function CampusView() {
               </div>
               <p className="mt-3 text-xs text-neutral-500">Parking occupancy comes from the lot cameras (not connected yet).</p>
             </section>
-            <section className="min-h-0 flex-1 overflow-auto rounded-xl border border-neutral-800 bg-neutral-900/60 p-2">
+            <section style={{ maxHeight: "max(240px, calc(100vh - 470px))" }} className="min-h-0 overflow-auto rounded-xl border border-neutral-800 bg-neutral-900/60 p-2">
               <p className="px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-neutral-500">Parking ({lots.length})</p>
               {lots.map((l) => (
                 <button key={l.id} onClick={() => { engine.current?.flyToLot(l); setPicked(l); }}
@@ -117,12 +117,19 @@ export default function CampusView() {
         )}
       </aside>
 
-      <section className="relative min-h-[60vh] flex-1 overflow-hidden rounded-xl border border-neutral-800 bg-[#0b1117]">
+      <section style={{ height: "max(420px, calc(100vh - 90px))" }} className="relative order-first min-h-0 w-full flex-1 overflow-hidden rounded-xl lg:order-none border border-neutral-800 bg-[#0b1117]">
         <canvas ref={canvasRef} className="block h-full w-full touch-none" aria-label="3D map of the complex" />
         {!osm && !busy && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center text-neutral-300">
             <Building2 className="h-10 w-10 text-sky-300" />
             <p className="max-w-md text-sm">Find a university, hospital or stadium by name: its buildings, roads and parking lots are built in 3D from OpenStreetMap.</p>
+            <button
+              onClick={async () => {
+                setBusy("Loading the Wayne State demo…");
+                try { const r = await fetch(`${import.meta.env.BASE_URL || "/"}demo/wayne-state-osm.json`); await openFile(await r.blob(), "Wayne State University"); } catch { setError("Could not load the demo"); }
+                setBusy("");
+              }}
+              className="rounded-md border border-sky-400/50 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-500/10">Load the Wayne State demo</button>
             <button onClick={() => fileRef.current?.click()} className="flex items-center gap-1.5 text-xs text-neutral-400 underline"><FileUp className="h-3.5 w-3.5" /> or open an OpenStreetMap (Overpass JSON) file</button>
           </div>
         )}
