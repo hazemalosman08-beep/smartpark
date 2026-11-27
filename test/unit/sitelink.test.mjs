@@ -35,7 +35,7 @@ const link = makeLink(pairs, { cameraAspect: 16 / 9, view: "angled" });
 test("camera view: only the spaces the camera sees, with the site's ids", () => {
   const cam = cameraView(siteCal, link);
   assert.deepEqual(cam.stalls.map((s) => s.row), ["A", "A", "A", "A"]);
-  assert.equal(cam.view, "angled");
+  assert.equal(cam.view, "overhead", "this camera barely squashes depth: seen from high up");
   const back = applyHomography(link.H, cam.stalls[0].poly[0]);
   assert.ok(Math.hypot(back.x - siteCal.stalls[0].poly[0].x, back.y - siteCal.stalls[0].poly[0].y) < 0.05);
   assert.ok(cam.entrance);
@@ -70,4 +70,12 @@ test("a car seen by the camera is placed on the site plan", () => {
   const s = cameraLotToSiteLot(camLot, siteLot, link, ground);
   const expect = siteLot.toLot({ x: 45, y: 35 });
   assert.ok(Math.hypot(s.x - expect.x, s.y - expect.y) < 0.1);
+});
+
+test("camera tilt from the link: steep camera -> overhead, low camera -> angled", () => {
+  const steep = makeLink(siteQuad.map((sq, i) => ({ from: [{ x: 22, y: 22 }, { x: 78, y: 22 }, { x: 80, y: 80 }, { x: 20, y: 80 }][i], to: sq })), { cameraAspect: 1.5 });
+  const low = makeLink(siteQuad.map((sq, i) => ({ from: [{ x: 42, y: 72 }, { x: 58, y: 72 }, { x: 99, y: 92 }, { x: 1, y: 92 }][i], to: sq })), { cameraAspect: 1.5 });
+  assert.equal(cameraView(siteCal, steep).view, "overhead");
+  assert.equal(cameraView(siteCal, low).view, "angled");
+  assert.equal(cameraView(siteCal, { ...low, view: "overhead", viewManual: true }).view, "overhead", "a choice by hand wins");
 });

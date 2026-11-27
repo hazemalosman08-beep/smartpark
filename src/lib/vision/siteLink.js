@@ -113,7 +113,28 @@ export function cameraView(site, link) {
     stalls.push({ ...st, poly: poly.map(round) });
   }
   const point = (p) => { const q = pt(p); return q && inFrame(q) ? { ...p, ...round(q) } : null; };
-  return { ...base, stalls, entrance: point(site.entrance), building: point(site.building) };
+  const view = link.viewManual ? link.view : cameraTilt(site, link, stalls);
+  return { ...base, view, stalls, entrance: point(site.entrance), building: point(site.building) };
+}
+
+/**
+ * How steeply the camera looks down, from the link: a space keeps its true
+ * proportions (depth : width) when seen from straight above and is squashed
+ * in depth from a low angle. Mostly true proportions -> "overhead" (cars are
+ * judged by their whole outline), else "angled" (by the strip where the car
+ * meets the ground).
+ */
+export function cameraTilt(site, link, cameraStalls) {
+  const sa = site.aspect || 1.5, ca = link.cameraAspect || 16 / 9;
+  const ratio = (poly, aspect) => {
+    const w = Math.hypot((poly[1].x - poly[0].x) * aspect, poly[1].y - poly[0].y);
+    const d = Math.hypot((poly[3].x - poly[0].x) * aspect, poly[3].y - poly[0].y);
+    return w > 0 ? d / w : NaN;
+  };
+  const byId = new Map((site.stalls || []).map((s) => [s.id, s]));
+  const f = cameraStalls.map((c) => ratio(c.poly, ca) / ratio(byId.get(c.id).poly, sa)).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!f.length) return link.view || "angled";
+  return f[Math.floor(f.length / 2)] >= 0.6 ? "overhead" : "angled";
 }
 
 /**
@@ -145,7 +166,10 @@ export function applyCameraEdit(site, link, before, after) {
       entrance: moved("entrance") ? toSite(after.entrance) : site.entrance,
       building: moved("building") ? toSite(after.building) : after.building === null && before.building ? null : site.building,
     },
-    link: { ...link, cameraAspect: after.aspect || link.cameraAspect, view: after.view || link.view },
+    // A view chosen by hand (Angled / Overhead buttons) overrides the automatic one.
+    link: after.view && after.view !== before.view
+      ? { ...link, cameraAspect: after.aspect || link.cameraAspect, view: after.view, viewManual: true }
+      : { ...link, cameraAspect: after.aspect || link.cameraAspect },
   };
 }
 
