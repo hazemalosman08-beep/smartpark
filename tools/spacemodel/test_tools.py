@@ -39,6 +39,17 @@ class SplitTest(unittest.TestCase):
                 self.assertEqual(len(splits), 1, f"{lot} in {splits}")
 
 
+class AcpdsSplitTest(unittest.TestCase):
+    def test_dataset_split_is_kept_and_test_never_emptied(self):
+        with tempfile.TemporaryDirectory() as d:
+            for lot, n in (("acpds-train", 6), ("acpds-valid", 2), ("acpds-test", 3)):
+                for i in range(n):
+                    save(Annotation(lot_id=lot, width=10, height=10, data_url="data:,", spaces=[]), os.path.join(d, f"{lot}-{i}.json"))
+            r = split_dir(d)
+            self.assertEqual(r["by_lot"], {"acpds-train": "train", "acpds-valid": "val", "acpds-test": "test"})
+            self.assertEqual(len(r["files"]["test"]), 3)
+
+
 class ConvertTest(unittest.TestCase):
     def test_acpds_layout(self):
         with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:

@@ -42,12 +42,23 @@ def assign(lot_counts, val=0.15, test=0.2, seed=0, test_lots=(), val_lots=()):
             split = "train"
         out[lot] = split
         have[split] += lot_counts[lot]
-    # Never leave training empty when there is more than one lot.
+    # Never leave training empty when there is more than one lot, but never by
+    # emptying the test split either (a run without test lots has no score).
     if len(lot_counts) > 1 and "train" not in out.values():
-        biggest = max((l for l in out if l not in test_lots), key=lambda l: lot_counts[l], default=None)
+        movable = [l for l in out if l not in test_lots and l not in val_lots
+                   and not (out[l] == "test" and list(out.values()).count("test") == 1)]
+        biggest = max(movable, key=lambda l: lot_counts[l], default=None)
         if biggest:
             out[biggest] = "train"
     return out
+
+
+def dataset_groups(lots):
+    """Datasets that come with their own lot-separated split keep it:
+    "<name>-test" lots go to test, "<name>-valid"/"-val" lots to validation."""
+    test = [l for l in lots if l.endswith("-test")]
+    val = [l for l in lots if l.endswith("-valid") or l.endswith("-val")]
+    return test, val
 
 
 def split_dir(ann_dir, **kw):
@@ -62,6 +73,9 @@ def split_dir(ann_dir, **kw):
     counts = defaultdict(int)
     for lot in lots.values():
         counts[lot] += 1
+    auto_test, auto_val = dataset_groups(counts)
+    kw["test_lots"] = list(kw.get("test_lots") or []) + auto_test
+    kw["val_lots"] = list(kw.get("val_lots") or []) + auto_val
     by_lot = assign(dict(counts), **kw)
     result = {"by_lot": by_lot, "files": {s: [os.path.basename(f) for f, l in lots.items() if by_lot[l] == s] for s in ("train", "val", "test")}}
     # Proof of no leakage: no lot appears in two splits.
