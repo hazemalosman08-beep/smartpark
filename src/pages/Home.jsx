@@ -13,7 +13,7 @@ import {
   routeToStall, sampleCalibration,
 } from "@/lib/vision/lot";
 import { createSimulation } from "@/lib/vision/simulation";
-import { warpFrameToPlan } from "@/lib/vision/warp";
+import { composeSiteWithCamera, warpFrameToPlan } from "@/lib/vision/warp";
 import { applyCameraEdit, cameraLotToSiteLot, cameraView } from "@/lib/vision/siteLink";
 import { loadPhoto, savePhoto } from "@/lib/photoStore";
 import { CameraLinkDialog, SiteBar } from "@/components/SmartPark/SitePanel";
@@ -60,6 +60,23 @@ export default function Home() {
     loadPhoto("site").then((blob) => { if (!gone && blob) setSiteImage((old) => { if (old) URL.revokeObjectURL(old.url); return { blob, url: URL.createObjectURL(blob) }; }); });
     return () => { gone = true; };
   }, [Boolean(site)]);
+  // One combined picture: the satellite picture with the linked camera's live
+  // view projected onto the ground it covers. Redrawn at most every 3 s.
+  const [combined, setCombined] = useState(null); // { url, at }
+  const composing = useRef(false);
+  useEffect(() => {
+    if (!site || !siteImage || !link?.H || siteMode !== "camera" || !frame) return;
+    if (composing.current || (combined && Date.now() - combined.at < 3000)) return;
+    composing.current = true;
+    composeSiteWithCamera(siteImage.url, frame.url, link.H)
+      .then((url) => { if (url) setCombined((old) => { if (old) setTimeout(() => URL.revokeObjectURL(old.url), 4000); return { url, at: Date.now() }; }); })
+      .catch(() => {})
+      .finally(() => { composing.current = false; });
+  }, [site, siteImage, link, siteMode, frame, combined]);
+  useEffect(() => { if (!link) setCombined(null); }, [link]);
+  // Development only: the combined picture, for automated checks.
+  useEffect(() => { if (import.meta.env.DEV) window.__smartparkCombined = combined?.url || null; }, [combined]);
+
   const camCal = useMemo(() => (cameraMode ? normalizeCalibration(cameraView(calibration, link)) : null), [cameraMode, calibration, link]);
   const camLot = useMemo(() => (camCal ? deriveLot(camCal) : null), [camCal]);
   const camRef = useRef({});
@@ -149,11 +166,12 @@ export default function Home() {
   }, [frame, lot]);
   const backdrop = useMemo(() => {
     // With a site map, the plan is the aerial picture, whatever the camera shows.
-    if (site && siteImage) return { href: siteImage.url, x: 0, y: 0, w: 100 * (calibration.aspect || 1.5), h: 100 };
+    // The combined picture (satellite + live camera) once a camera is linked.
+    if (site && siteImage) return { href: combined?.url || siteImage.url, x: 0, y: 0, w: 100 * (calibration.aspect || 1.5), h: 100 };
     if (!frame || calibration.sample) return null;
     if (lot.rectified) return warped;
     return { href: frame.url, x: 0, y: 0, w: 100 * (calibration.aspect || frame.width / frame.height), h: 100 };
-  }, [frame, lot, warped, calibration.aspect, calibration.sample, site, siteImage]);
+  }, [frame, lot, warped, calibration.aspect, calibration.sample, site, siteImage, combined]);
 
   // ------------------------------------------------------------- simulation
   const simRef = useRef(null);

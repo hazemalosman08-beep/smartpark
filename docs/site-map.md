@@ -17,6 +17,11 @@ one aerial picture and a camera linked to it.
 5. The camera now reports on the site's spaces. Lot and Driver tabs (and the 3D guide) use the site
    map, with the aerial picture as background.
 
+* **One combined picture:** once a camera is linked, the satellite picture is redrawn with the camera's
+  live view projected onto the ground it covers (blended at the edges, every 3 s). The Lot and Driver
+  tabs and the 3D guide use that combined picture, so the map shows the cars the camera sees now; where
+  no camera looks, the satellite picture is kept. Tall things (cars, poles, trees) seen at an angle
+  lean in the projection; the ground lines up exactly.
 * Spaces the camera does not see are **not covered**: drawn gray, not counted as open, never
   recommended.
 * The camera view is set to Angled / Overhead automatically from how steeply the camera looks down
