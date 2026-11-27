@@ -61,3 +61,13 @@ test("merge: confirmed spaces gain confidence, missed spaces are added as a row"
   assert.equal(new Set(added.map((s) => s.row)).size, 1, "added side by side as one row");
   assert.notEqual(added[0].row, "A");
 });
+
+test("model masks: a row merged through gaps in its lines is split back into spaces", () => {
+  const { interior, boundary, W, H } = masks();
+  // Gaps in the lines of the bottom row (x 40, 60, 80, 100; y 61..99).
+  for (const gx of [40, 60, 80, 100]) for (let y = 72; y < 86; y += 1) for (let x = gx - 1; x < gx + 3; x += 1) { interior[y * W + x] = 0.9; boundary[y * W + x] = 0.05; }
+  const plain = spacesFromMasks({ interior, boundary, W, H }, { split: false });
+  const split = spacesFromMasks({ interior, boundary, W, H });
+  assert.equal(plain.length, 6, "without splitting the bottom row is one blob");
+  assert.equal(split.length, 10, "split back into five spaces");
+});

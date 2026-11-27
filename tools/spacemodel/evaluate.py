@@ -13,15 +13,52 @@ from collections import defaultdict
 import numpy as np
 
 
-def decode(probs, threshold=0.5, min_area=30):
-    """probs: (3, H, W) softmax. Returns [(polygon [[x,y]x4], confidence)]."""
+def decode(probs, threshold=0.5, min_area=30, method="grow", seed_boundary=0.25, erode=1, depth=0.6, big=1.7):
+    """probs: (3, H, W) softmax. Returns [(polygon [[x,y]x4], confidence)].
+
+    method="grow" (default): connected interior regions, and blobs much bigger
+    than a typical space (spaces merged through gaps in their lines) are split:
+    seeds are the deepest parts of the blob away from predicted lines, each
+    grows until it meets its neighbours; the split is kept only if every piece
+    is space-sized.
+    method="plain": connected interior regions (the first version).
+    Mirrors src/lib/vision/spaceMasks.js.
+    """
     import cv2
     from scipy import ndimage
     interior, boundary = probs[1], probs[2]
-    on = (interior >= threshold) & (interior > boundary)
-    labels, n = ndimage.label(on, structure=[[0, 1, 0], [1, 1, 1], [0, 1, 0]])
+    cross = [[0, 1, 0], [1, 1, 1], [0, 1, 0]]
+    labels, n = ndimage.label((interior >= threshold) & (interior > boundary), structure=cross)
+    if method != "plain" and n >= 3:
+        # Only blobs much bigger than a typical space are split (rows merged
+        # through gaps in their lines); a split is kept only if every piece is
+        # space-sized, so ordinary spaces are never cut up.
+        sizes = np.asarray(ndimage.sum(np.ones_like(labels), labels, index=np.arange(1, n + 1)))
+        typical = float(np.median(sizes[sizes >= min_area])) if (sizes >= min_area).any() else 0
+        nxt = n + 1
+        for k in np.nonzero(sizes > big * typical)[0] + 1 if typical else []:
+            blob = labels == k
+            core = blob & (boundary < seed_boundary)
+            if erode:
+                core = ndimage.binary_erosion(core, structure=cross, iterations=erode)
+            dist = ndimage.distance_transform_edt(core)
+            seeds, m = ndimage.label(dist >= depth * dist.max() if dist.max() > 0 else core, structure=cross)
+            if m < 2:
+                continue
+            for _ in range(64):
+                grown = ndimage.grey_dilation(seeds, footprint=np.array(cross, bool))
+                take = (seeds == 0) & blob & (grown > 0)
+                if not take.any():
+                    break
+                seeds[take] = grown[take]
+            pieces = np.asarray(ndimage.sum(np.ones_like(seeds), seeds, index=np.arange(1, m + 1)))
+            if (pieces < 0.4 * typical).any():
+                continue
+            for j in range(1, m + 1):
+                labels[seeds == j] = nxt
+                nxt += 1
     out = []
-    for k in range(1, n + 1):
+    for k in range(1, int(labels.max()) + 1):
         ys, xs = np.nonzero(labels == k)
         if len(xs) < min_area:
             continue

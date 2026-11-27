@@ -94,3 +94,23 @@ class ModelTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GrowDecodeTest(unittest.TestCase):
+    def test_gaps_in_lines_do_not_merge_spaces(self):
+        from .evaluate import decode, match
+        row = [[[20 + 22 * k, 20], [40 + 22 * k, 20], [40 + 22 * k, 70], [20 + 22 * k, 70]] for k in range(5)]
+        other = [[[20 + 22 * k, 80], [40 + 22 * k, 80], [40 + 22 * k, 125], [20 + 22 * k, 125]] for k in range(4)]
+        spaces = row + other
+        mask = render(spaces, 128)
+        probs = np.stack([(mask == c).astype(np.float32) for c in range(3)])
+        # Punch gaps into every line between neighbours (as the real model does).
+        for k in range(1, 5):
+            x = 20 + 22 * k
+            probs[:, 40:48, x - 3:x + 3] = 0
+            probs[1, 40:48, x - 3:x + 3] = 0.9
+            probs[2, 40:48, x - 3:x + 3] = 0.1
+        plain = decode(probs, min_area=20, method="plain")
+        grow = decode(probs, min_area=20)
+        self.assertLess(match([p for p, _ in plain], row, 0.5)[0], 2, "plain decoding merges the row")
+        self.assertEqual(match([p for p, _ in grow], spaces, 0.5), (9, 0, 0), "splitting keeps all nine")
