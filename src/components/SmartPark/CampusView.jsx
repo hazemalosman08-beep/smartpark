@@ -8,7 +8,9 @@ import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySi
 function rankParking(osm, building, permit, occ) {
   const all = nearestParking(osm, building, 8, { permit });
   const full = (o) => occ?.get(o.lot.id)?.free === 0;
-  return [...all.filter((o) => !full(o)), ...all.filter(full)].slice(0, 5);
+  // Usable lots with space, then usable but full, then lots the driver may not use.
+  const rank = (o) => (!o.allowed ? 2 : full(o) ? 1 : 0);
+  return all.map((o, i) => ({ o, i })).sort((a, b) => rank(a.o) - rank(b.o) || a.i - b.i).map((x) => x.o).slice(0, 5);
 }
 
 function FreeBadge({ o, className = "" }) {
@@ -253,9 +255,9 @@ export default function CampusView() {
                     className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm ring-1 ${o === trip.chosen ? "bg-green-500/15 text-white ring-green-400/50" : "text-neutral-200 ring-white/5 hover:bg-white/5"}`}>
                     <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${o === trip.chosen ? "bg-green-500 text-white" : "bg-white/10"}`}>{i + 1}</span>
                     <span className="min-w-0 flex-1">
-                      <span className={`block truncate font-medium ${o.permitOnly && !permit ? "text-neutral-400" : ""}`}>{o.lot.name || (/multi/.test(o.lot.kind) ? "Parking structure" : "Unnamed lot")}</span>
+                      <span className={`block truncate font-medium ${o.allowed === false ? "text-neutral-400" : ""}`}>{o.lot.name || (/multi/.test(o.lot.kind) ? "Parking structure" : "Unnamed lot")}</span>
                       <span className="block text-[11px] text-neutral-400">
-                        {/multi|underground/.test(o.lot.kind) ? "Garage" : "Surface lot"}{o.lot.capacity ? ` · ${o.lot.capacity} spaces` : ""}{o.private ? " · private" : o.permitOnly ? " · permit only" : o.customers ? " · customers only" : o.lot.access && !/^(yes|public)$/.test(o.lot.access) ? ` · ${o.lot.access}` : ""}{o.lot.fee === "yes" ? " · paid" : ""}
+                        {/multi|underground/.test(o.lot.kind) ? "Garage" : "Surface lot"}{o.lot.capacity ? ` · ${o.lot.capacity} spaces` : ""}{o.private ? (o.allowed ? " · permit holders" : " · private") : o.permitOnly ? " · permit only" : o.customers ? " · visitors" : o.lot.access && !/^(yes|public)$/.test(o.lot.access) ? ` · ${o.lot.access}` : ""}{o.lot.fee === "yes" ? " · paid" : ""}
                       </span>
                       {occ?.get(o.lot.id) && <FreeBadge o={occ.get(o.lot.id)} className="block text-xs" />}
                     </span>

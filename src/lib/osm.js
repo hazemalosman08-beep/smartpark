@@ -576,7 +576,8 @@ const DETOUR = 1.3;
 /**
  * Parking closest to a building: distance between the outlines (edge to
  * edge), walking estimate, and the two closest points (for drawing the walk).
- * Private lots are listed last; spaces mapped one by one are left out.
+ * Lots the driver may not use come after the others; spaces mapped one by
+ * one are left out.
  */
 export function nearestParking(osm, building, n = 5, { permit = true } = {}) {
   const lots = osm.parking.filter((p) => !p.space && p.outer?.length >= 3);
@@ -584,11 +585,17 @@ export function nearestParking(osm, building, n = 5, { permit = true } = {}) {
     .map((lot) => {
       const { d, a, b } = polygonGap(lot.outer, building.outer);
       const walkMeters = Math.round(d * DETOUR);
-      return { lot, distance: Math.round(d), walkMeters, walkMinutes: Math.max(1, Math.round(walkMeters / WALK_SPEED / 60)), from: a, to: b, private: /^(private|no)$/.test(lot.access || ""), permitOnly: /permit|permissive_permit/.test(lot.access || "") };
+      const access = lot.access || "";
+      const priv = /^(private|no)$/.test(access);
+      const permitOnly = /permit/.test(access);
+      const customers = /customers|destination|visitors/.test(access);
+      // Who may park here. Visitor lots are for people going to the place,
+      // which is exactly who asks. Permit lots need a permit; private lots
+      // on the site are its staff/student lots, so a permit opens them too.
+      const allowed = priv ? permit && lot.inComplex !== false && building.inComplex !== false : permitOnly ? permit : true;
+      return { lot, distance: Math.round(d), walkMeters, walkMinutes: Math.max(1, Math.round(walkMeters / WALK_SPEED / 60)), from: a, to: b, private: priv, permitOnly, customers, allowed, tier: allowed ? 0 : priv ? 2 : 1 };
     })
-    // Who may park: open to everyone first, then lots for a business's
-    // customers, then permit-only (unless the driver has a permit), private last.
-    .map((o) => ({ ...o, customers: /customers|destination/.test(o.lot.access || ""), tier: o.private ? 3 : o.permitOnly && !permit ? 2 : /customers|destination/.test(o.lot.access || "") ? 1 : 0 }))
+    // The closest lot the driver may use; the others after it.
     .sort((x, y) => x.tier - y.tier || x.distance - y.distance)
     .slice(0, n);
 }

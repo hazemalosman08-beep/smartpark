@@ -189,3 +189,15 @@ test("limitBounds: a single building gets at least 600 m around it", async () =>
   assert.equal(limited, false);
   assert.ok(Math.abs((bounds.maxlat - bounds.minlat) * 111320 - 600) < 1);
 });
+
+test("closest parking: a visitor lot next door beats an open lot further away; permit opens on-site private lots", async () => {
+  const { nearestParking } = await import("../../src/lib/osm.js");
+  const sq = (x, y, w = 40) => [{ x, y }, { x: x + w, y }, { x: x + w, y: y + w }, { x, y: y + w }];
+  const building = { name: "Science Hall", outer: sq(0, 0), inComplex: true };
+  const garage = { id: "g", outer: sq(50, 0), access: "customers", kind: "multi-storey", inComplex: true }; // 10 m
+  const staff = { id: "s", outer: sq(-45, 0), access: "private", kind: "surface", inComplex: true }; // 5 m
+  const open = { id: "o", outer: sq(200, 0), access: "yes", kind: "surface", inComplex: false }; // 160 m
+  const osm = { parking: [open, garage, staff], buildings: [] };
+  assert.deepEqual(nearestParking(osm, building, 3, { permit: false }).map((o) => o.lot.id), ["g", "o", "s"]);
+  assert.deepEqual(nearestParking(osm, building, 3, { permit: true }).map((o) => o.lot.id), ["s", "g", "o"]);
+});
