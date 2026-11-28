@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Camera, Image as ImageIcon, Map as MapIcon, Navigation, Radio } from "lucide-react";
 import TopBar from "@/components/SmartPark/TopBar";
 import LiveCamera from "@/components/SmartPark/LiveCamera";
@@ -22,6 +23,15 @@ import { feedPictures, loadFeeds, newFeed, readingFrom, saveFeeds } from "@/lib/
 
 const EMPTY_MAP = new Map();
 const CampusView = lazy(() => import("@/components/SmartPark/CampusView"));
+
+// The one camera (LiveCamera) lives in a DOM node that is moved between
+// places: the Camera tab, or the Staff view while a lot's live feed is set
+// up. Moving it does not restart it (a running camera keeps running).
+function CameraSlot({ host, active, className }) {
+  const ref = useRef(null);
+  useEffect(() => { if (active && ref.current && host.parentNode !== ref.current) ref.current.appendChild(host); }, [active, host]);
+  return <div ref={ref} className={className} />;
+}
 
 export default function Home() {
   const [tab, setTab] = useState("camera");
@@ -147,12 +157,13 @@ export default function Home() {
   const [feedSetup, setFeedSetup] = useState(null); // the feed being set up in the Camera tab
   const [activeFeedId, setActiveFeedId] = useState(null); // the feed this camera is running as
   const activeFeed = feeds.find((f) => f.id === activeFeedId) || null;
+  const [showInside, setShowInside] = useState(null);
+  const [camHost] = useState(() => { const d = document.createElement("div"); d.className = "flex min-h-[70vh] flex-1 flex-col"; return d; }); // { id, nonce }: open a lot's guide in the Staff view
   const addFeed = useCallback((osm, lot) => {
     setFeedSetup(newFeed(osm, lot));
     setActiveFeedId(null);
     setCalibrationState(normalizeCalibration(EMPTY_CALIBRATION));
     setOpenPicture({ stop: true, nonce: Date.now() });
-    setTab("camera");
   }, []);
   const openFeed = useCallback(async (feed) => {
     setFeedSetup(feed);
@@ -160,7 +171,6 @@ export default function Home() {
     setCalibrationState(normalizeCalibration(feed.calibration || EMPTY_CALIBRATION));
     const blob = await feedPictures.load(feed.id);
     setOpenPicture(blob ? { blob, nonce: Date.now() } : { stop: true, nonce: Date.now() });
-    setTab("camera");
   }, []);
   const saveFeedSetup = useCallback(async () => {
     const f = feedSetup;
@@ -176,7 +186,8 @@ export default function Home() {
     } catch { /* the map still works without it */ }
     setActiveFeedId(f.id);
     setFeedSetup(null);
-    setTab("staff");
+    // Show staff the lot as drivers will see it: its own guide screen.
+    setShowInside({ id: f.id, nonce: Date.now() });
   }, [feedSetup, calibration, frame, setFeeds]);
   const removeFeed = useCallback((feed) => {
     if (!window.confirm(`Remove the live feed from ${feed.lotName || "this lot"}?`)) return;
@@ -344,24 +355,6 @@ export default function Home() {
 
       {/* The camera keeps running while the plan is open, so the plan stays live. */}
       <main className={tab === "camera" ? "flex flex-1 flex-col gap-3 p-3 lg:p-4" : "hidden"}>
-        {feedSetup && (
-          <section className="rounded-xl border border-green-500/40 bg-green-500/[0.07] p-3 text-sm text-green-50">
-            <p className="font-semibold">Live feed for {feedSetup.lotName || "a parking lot"} · {feedSetup.placeName}</p>
-            <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-xs text-green-100/80">
-              <li>Choose this lot&apos;s camera below: this device&apos;s camera, a phone, a video or a photo.</li>
-              <li>Map the spaces (Find spaces, or draw them).</li>
-              <li>Save: the lot on the Campus map then shows this camera&apos;s free spaces.</li>
-            </ol>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <button onClick={saveFeedSetup} disabled={!calibration.stalls.length}
-                className="rounded-md bg-green-500 px-3 py-1.5 text-xs font-semibold text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40">
-                Save feed to lot{calibration.stalls.length ? ` (${calibration.stalls.length} spaces)` : ""}
-              </button>
-              <button onClick={() => { setFeedSetup(null); setTab("staff"); }} className="rounded-md px-3 py-1.5 text-xs text-green-100 ring-1 ring-green-400/40 hover:bg-white/5">Cancel</button>
-              {!calibration.stalls.length && <span className="text-[11px] text-green-100/60">Map at least one space to save.</span>}
-            </div>
-          </section>
-        )}
         {!feedSetup && activeFeed && (
           <section className="flex flex-wrap items-center gap-2 rounded-xl border border-green-500/30 bg-green-500/[0.05] px-3 py-2 text-xs text-green-100">
             <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-green-400" /></span>
@@ -394,7 +387,8 @@ export default function Home() {
             onSave={saveLink}
           />
         )}
-        <div className="flex min-h-[70vh] flex-1 flex-col">
+        <CameraSlot host={camHost} active={!(feedSetup && tab === "staff")} className="flex min-h-[70vh] flex-1 flex-col" />
+        {createPortal(
           <LiveCamera
             calibration={calibration}
             onCalibrationChange={setCalibration}
@@ -404,9 +398,10 @@ export default function Home() {
             assignVehicleId={vehicleSessions.assignVehicleId}
             remoteCode={remoteCode}
             onRemoteCodeChange={setRemoteCode}
-            visible={tab === "camera"}
-          />
-        </div>
+            visible={tab === "camera" || Boolean(feedSetup && tab === "staff")}
+          />,
+          camHost,
+        )}
         {calibration.sample && (
           <p className="rounded-md border border-violet-500/40 bg-violet-500/10 px-3 py-2 text-xs text-violet-200">
             The sample lot is loaded. Use <b>Clear map</b> and draw your own stalls to map the lot in your camera picture.
@@ -418,7 +413,10 @@ export default function Home() {
         <main className="flex flex-1 flex-col">
           <Suspense fallback={<p className="p-6 text-sm text-neutral-400">Loading 3D…</p>}>
             <CampusView mode={tab === "staff" ? "staff" : "user"} feeds={feeds} activeFeedId={activeFeedId}
-              onAddFeed={addFeed} onOpenFeed={openFeed} onRemoveFeed={removeFeed} />
+              onAddFeed={addFeed} onOpenFeed={openFeed} onRemoveFeed={removeFeed}
+              feedSetup={feedSetup} setupSpaces={calibration.stalls.length} onSaveFeed={saveFeedSetup} onCancelFeed={() => setFeedSetup(null)}
+              cameraSlot={<CameraSlot host={camHost} active={Boolean(feedSetup) && tab === "staff"} className="flex min-h-[640px] flex-col" />}
+              showInside={showInside} />
           </Suspense>
         </main>
       )}

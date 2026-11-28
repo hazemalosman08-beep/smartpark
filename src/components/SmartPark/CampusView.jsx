@@ -151,7 +151,8 @@ const ago = (t) => { const s = Math.max(0, Math.round((Date.now() - t) / 1000));
 // or reopened (it then starts clean).
 let visitOsm = null;
 
-export default function CampusView({ mode = "user", feeds = [], activeFeedId = null, onAddFeed, onOpenFeed, onRemoveFeed }) {
+export default function CampusView({ mode = "user", feeds = [], activeFeedId = null, onAddFeed, onOpenFeed, onRemoveFeed,
+  feedSetup = null, setupSpaces = 0, onSaveFeed, onCancelFeed, cameraSlot = null, showInside = null }) {
   const staff = mode === "staff";
   const canvasRef = useRef(null);
   const engine = useRef(null);
@@ -302,6 +303,8 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
   // Inside a live lot: its own 3D guide (by feed id, so it follows new readings).
   const [insideId, setInsideId] = useState(null);
   const insideFeed = placeFeeds.find((f) => f.id === insideId) || null;
+  // A feed just saved: open its lot's guide (what drivers will see).
+  useEffect(() => { if (showInside?.id) setInsideId(showInside.id); }, [showInside?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { engine.current?.setOccupancy(occ, { staff, feeds: feedByLot }); }, [occ, staff, feedByLot]);
   const occTotals = useMemo(() => {
     if (!occ) return null;
@@ -672,6 +675,29 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
           <LotCard lot={picked} engine={engine} o={occ?.get(picked.id)} feed={feedByLot.get(picked.id)} staff={staff} active={feedByLot.get(picked.id)?.id === activeFeedId}
             onInside={(f) => { setInsideId(f.id); setPicked(null); }}
             onAdd={() => onAddFeed?.(osm, picked)} onOpen={(f) => onOpenFeed?.(f)} onRemove={(f) => onRemoveFeed?.(f)} onClose={() => setPicked(null)} />
+        )}
+        {staff && feedSetup && (
+          <div className="absolute inset-0 z-30 flex flex-col overflow-auto bg-[#0b1117]">
+            <section className="sticky top-0 z-10 border-b border-green-500/30 bg-[#0d1f14]/95 px-4 py-3 text-sm text-green-50 backdrop-blur">
+              <div className="flex flex-wrap items-center gap-2">
+                <Video className="h-4 w-4 text-green-300" />
+                <p className="font-semibold">Live feed for {feedSetup.lotName || "this parking lot"} · {feedSetup.placeName}</p>
+                <div className="ml-auto flex items-center gap-2">
+                  <button onClick={onSaveFeed} disabled={!setupSpaces}
+                    className="rounded-md bg-green-500 px-3 py-1.5 text-xs font-semibold text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40">
+                    Save feed to lot{setupSpaces ? ` (${setupSpaces} spaces)` : ""}
+                  </button>
+                  <button onClick={onCancelFeed} className="rounded-md px-3 py-1.5 text-xs text-green-100 ring-1 ring-green-400/40 hover:bg-white/5">Cancel</button>
+                </div>
+              </div>
+              <ol className="mt-1 flex flex-wrap gap-x-5 gap-y-0.5 text-xs text-green-100/75">
+                <li><b>1</b> Add the lot&apos;s camera: Webcam, Phone camera, or a photo / video file</li>
+                <li><b>2</b> Map the spaces: Find spaces automatically, or draw them; mark the Entrance and Building</li>
+                <li><b>3</b> Save: drivers see the lot&apos;s free spaces and its guide</li>
+              </ol>
+            </section>
+            <div className="p-3">{cameraSlot}</div>
+          </div>
         )}
         {insideFeed && <LiveLotView feed={insideFeed} lotName={osm?.parking.find((p) => p.id === insideFeed.lotId)?.name || insideFeed.lotName} onBack={() => setInsideId(null)} />}
         <p className="absolute bottom-2 right-3 text-[11px] text-neutral-400">
