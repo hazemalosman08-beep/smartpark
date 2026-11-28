@@ -43,14 +43,18 @@ export function estimateCapacity(lot, garageHeight = 0) {
 export function createSimulation(osm, { seed = 7 } = {}) {
   const rand = rng(seed);
   const lots = new Map();
-  for (const lot of osm.parking) {
-    if (lot.space) continue;
-    const garage = isGarage(lot) ? osm.buildings.find((b) => b.garage && b.name && b.name === lot.name) : null;
-    const { total, estimated } = estimateCapacity(lot, garage?.height);
-    // Busy lots and quiet lots, a few nearly full.
-    const fill = rand() < 0.2 ? 0.9 + rand() * 0.1 : 0.3 + rand() * 0.6;
-    lots.set(lot.id, { total, estimated, occupied: Math.round(total * fill), target: fill, trend: 0 });
-  }
+  // Lots added later (more of a big place loaded) join the simulation.
+  const ensure = (map) => {
+    for (const lot of map.parking) {
+      if (lot.space || lots.has(lot.id)) continue;
+      const garage = isGarage(lot) ? map.buildings.find((b) => b.garage && b.name && b.name === lot.name) : null;
+      const { total, estimated } = estimateCapacity(lot, garage?.height);
+      // Busy lots and quiet lots, a few nearly full.
+      const fill = rand() < 0.2 ? 0.9 + rand() * 0.1 : 0.3 + rand() * 0.6;
+      lots.set(lot.id, { total, estimated, occupied: Math.round(total * fill), target: fill, trend: 0 });
+    }
+  };
+  ensure(osm);
   const step = () => {
     for (const s of lots.values()) {
       // The lot's own level wanders slowly; cars come and go around it.
@@ -68,7 +72,7 @@ export function createSimulation(osm, { seed = 7 } = {}) {
     for (const [id, s] of lots) out.set(id, { total: s.total, free: s.total - s.occupied, estimated: s.estimated, trend: s.trend });
     return out;
   };
-  return { lots, step, snapshot };
+  return { lots, step, snapshot, ensure };
 }
 
 /** Status of a lot from its free spaces: plenty / filling / full. */

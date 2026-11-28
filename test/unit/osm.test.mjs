@@ -254,3 +254,27 @@ test("a place too big to show: its main outline piece, centred on the place itse
   assert.ok(Math.abs(bounds.minlat - 40.0) < 1e-9, "clamped inside");
   assert.ok(Math.abs((bounds.minlon + bounds.maxlon) / 2 - -83.02) < 1e-9);
 });
+
+test("more of a big place: merged once per feature, in the same local metres, complex membership kept", async () => {
+  const { parseOsm, mergeOsm } = await import("../../src/lib/osm.js");
+  const sq = (lat, lon, d = 0.0003) => [{ lat, lon }, { lat, lon: lon + d }, { lat: lat + d, lon: lon + d }, { lat: lat + d, lon }, { lat, lon }];
+  const bounds = { minlat: 39.99, maxlat: 40.01, minlon: -83.03, maxlon: -83.0 };
+  const outline = { type: "way", id: 9, tags: { amenity: "university" }, geometry: sq(39.995, -83.025, 0.02) };
+  const first = parseOsm({ elements: [
+    { type: "way", id: 1, tags: { building: "university", name: "Hall" }, geometry: sq(40.0, -83.02) },
+    { type: "way", id: 2, tags: { highway: "residential" }, geometry: [{ lat: 40.0, lon: -83.03 }, { lat: 40.0, lon: -82.99 }] },
+  ] }, bounds, { outline });
+  const more = parseOsm({ elements: [
+    { type: "way", id: 1, tags: { building: "university", name: "Hall" }, geometry: sq(40.0, -83.02) }, // again
+    { type: "way", id: 2, tags: { highway: "residential" }, geometry: [{ lat: 40.0, lon: -83.03 }, { lat: 40.0, lon: -82.99 }] }, // again
+    { type: "way", id: 3, tags: { building: "university", name: "Annex" }, geometry: sq(40.01, -83.01) }, // inside the outline
+    { type: "way", id: 4, tags: { building: "house" }, geometry: sq(40.03, -82.97) }, // outside
+  ] }, bounds);
+  const box = { minlat: 40.0, maxlat: 40.04, minlon: -83.02, maxlon: -82.96 };
+  const merged = mergeOsm({ ...first, loaded: [] }, more, box);
+  assert.deepEqual(merged.buildings.map((b) => b.name || b.id), ["Hall", "Annex", "way/4"]);
+  assert.equal(merged.roads.length, 1);
+  assert.deepEqual(merged.buildings.map((b) => b.inComplex), [true, true, false]);
+  assert.deepEqual(merged.loaded, [box]);
+  assert.equal(merged.buildings[0], first.buildings[0], "existing features keep their identity (an open trip stays valid)");
+});

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock, MapPin, Moon, Search, Sun, X } from "lucide-react";
-import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, mainOutlineBounds, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
+import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchMore, fetchOutline, mainOutlineBounds, toLatLon, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
 import { STATES, stateByCode } from "@/lib/usStates";
@@ -39,6 +39,23 @@ function TypePick({ label, options, value, onChange, placeholder, id }) {
     </label>
   );
 }
+
+// A big place can be explored up to this size (around its own point);
+// more of it is loaded as the view moves.
+const MAX_EXPLORE_M = 12000;
+const LOAD_AROUND_M = 1500;
+
+function clampBox(b, maxM, centre) {
+  const lat = (b.minlat + b.maxlat) / 2;
+  const kx = 111320 * Math.cos((lat * Math.PI) / 180), ky = 111320;
+  const hw = Math.min((b.maxlon - b.minlon) * kx, maxM) / 2 / kx, hh = Math.min((b.maxlat - b.minlat) * ky, maxM) / 2 / ky;
+  const c = centre && Number.isFinite(centre.lat) ? centre : { lat, lon: (b.minlon + b.maxlon) / 2 };
+  const cl = Math.min(b.maxlat - hh, Math.max(b.minlat + hh, c.lat)), co = Math.min(b.maxlon - hw, Math.max(b.minlon + hw, c.lon));
+  return { minlat: cl - hh, maxlat: cl + hh, minlon: co - hw, maxlon: co + hw };
+}
+
+const insideBox = (p, b) => p.lat >= b.minlat && p.lat <= b.maxlat && p.lon >= b.minlon && p.lon <= b.maxlon;
+const clip = (b, f) => ({ minlat: Math.max(b.minlat, f.minlat), maxlat: Math.min(b.maxlat, f.maxlat), minlon: Math.max(b.minlon, f.minlon), maxlon: Math.min(b.maxlon, f.maxlon) });
 
 // Farther than this (about 10 minutes on foot) is not a real recommendation.
 const FAR_WALK_M = 800;
@@ -99,6 +116,7 @@ export default function CampusView() {
   const whereKey = `${countryCode}/${searchState?.code || ""}/${area?.code === countryCode ? 1 : 0}`;
   const [picked, setPicked] = useState(null);
   const [theme, setTheme] = useState("dark");
+  const touch = useMemo(() => { try { return window.matchMedia("(pointer: coarse)").matches; } catch { return false; } }, []);
   // "Where are you going?"
   const [goText, setGoText] = useState("");
   const [goOpen, setGoOpen] = useState(false);
@@ -121,7 +139,41 @@ export default function CampusView() {
     e.start();
     return () => { ro.disconnect(); e.dispose(); };
   }, []);
-  useEffect(() => { if (osm) { engine.current?.setData(osm); setTrip(null); setGoText(""); } }, [osm]);
+  // More of a big place, loaded as the view moves: merged in place (the
+  // view, the trip and the search stay as they are).
+  const extending = useRef(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const osmRef = useRef(null);
+  osmRef.current = osm;
+  useEffect(() => {
+    if (!osm) return;
+    if (extending.current) { extending.current = false; engine.current?.setData(osm, { fit: false }); return; }
+    engine.current?.setData(osm); setTrip(null); setGoText("");
+  }, [osm]);
+  useEffect(() => {
+    let busyMore = false;
+    const onView = async (v) => {
+      const o = osmRef.current;
+      if (!o?.full || busyMore) return;
+      const at = toLatLon(o.bounds, v.x, v.y);
+      const need = (m) => {
+        const dLat = m / 111320, dLon = m / (111320 * Math.cos((at.lat * Math.PI) / 180));
+        return clip({ minlat: at.lat - dLat, maxlat: at.lat + dLat, minlon: at.lon - dLon, maxlon: at.lon + dLon }, o.full);
+      };
+      const want = need(Math.min(LOAD_AROUND_M, Math.max(500, v.distance)));
+      const pts = [0, 0.5, 1].flatMap((fy) => [0, 0.5, 1].map((fx) => ({ lat: want.minlat + (want.maxlat - want.minlat) * fy, lon: want.minlon + (want.maxlon - want.minlon) * fx })));
+      if (pts.every((p) => (o.loaded || []).some((b) => insideBox(p, b)))) return;
+      busyMore = true;
+      setLoadingMore(true);
+      try {
+        const merged = await fetchMore(o, need(LOAD_AROUND_M));
+        if (osmRef.current === o) { extending.current = true; visitOsm = { ...merged, name: o.name }; setOsm(visitOsm); }
+      } catch { /* try again on the next move */ }
+      busyMore = false;
+      setLoadingMore(false);
+    };
+    if (engine.current) engine.current.onViewChange = onView;
+  }, []);
   useEffect(() => { engine.current?.setTrip(trip, { fly: trip?.fly !== false }); }, [trip]);
   useEffect(() => { if (engine.current) engine.current.onPickTrip = (o) => setTrip((t) => (t ? { ...t, chosen: o, fly: false } : t)); }, []);
   // Changing the permit switch re-ranks the current trip.
@@ -130,16 +182,20 @@ export default function CampusView() {
     setTrip((t) => { if (!t || !osm) return t; const options = rankParking(osm, t.building, permit, occRef.current); return { ...t, options, chosen: firstChoice(options) }; });
   }, [permit, osm, simOn]);
   // The simulation: new numbers every few seconds while the preview is on.
+  const simRef = useRef(null);
   useEffect(() => {
-    if (!simOn || !osm) { setOcc(null); return undefined; }
+    if (!simOn || !osmRef.current) { setOcc(null); simRef.current = null; return undefined; }
     let seed = 7;
-    for (const ch of osm.name || "") seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
-    const sim = createSimulation(osm, { seed });
+    for (const ch of osmRef.current.name || "") seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+    const sim = createSimulation(osmRef.current, { seed });
+    simRef.current = sim;
     const tick = () => { setOcc(sim.snapshot()); setOccAt(Date.now()); };
     tick();
-    const id = setInterval(() => { sim.step(); tick(); }, 4000);
+    const id = setInterval(() => { sim.ensure(osmRef.current); sim.step(); tick(); }, 4000);
     return () => clearInterval(id);
-  }, [simOn, osm]);
+  }, [simOn, osm?.name, osm?.fetchedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Lots loaded later get numbers at once.
+  useEffect(() => { if (simRef.current && osm) { simRef.current.ensure(osm); setOcc(simRef.current.snapshot()); } }, [osm]);
   useEffect(() => { engine.current?.setOccupancy(occ); }, [occ]);
   const occTotals = useMemo(() => {
     if (!occ) return null;
@@ -205,7 +261,7 @@ export default function CampusView() {
     try {
       const data = await fetchArea(bounds, { onStatus: setBusy, outlineOf: place.osm });
       if (!data.buildings.length && !data.parking.length && !data.roads.length) throw new Error("OpenStreetMap has no buildings or roads mapped here yet.");
-      keep({ ...data, name: place.name, detail: place.detail, limited });
+      keep({ ...data, name: place.name, detail: place.detail, limited, full: limited ? clampBox(place.bounds, MAX_EXPLORE_M, place.centre) : null });
     } catch (err) {
       setError(err?.message && !/fetch/i.test(err.message) ? err.message : "The map servers are busy right now. Try again in a minute.");
     }
@@ -298,7 +354,7 @@ export default function CampusView() {
         </form>
         {busy && <p className="flex items-center gap-2 text-sm text-sky-200"><Loader2 className="h-4 w-4 animate-spin" /> {busy}</p>}
         {error && <p className="rounded-md bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>}
-        {osm?.limited && <p className="text-[11px] text-amber-200/80">This place is large: 3 × 3 km around its main site are shown.</p>}
+        {osm?.limited && <p className="text-[11px] text-amber-200/80">This place is large: it opens on its main site. Drag the map to explore the rest; it loads as you go.</p>}
         {(!osm || busy) && (
           <section aria-disabled="true" className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-3 opacity-70">
             <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-neutral-400"><StepDot n={2} /> Where are you going? <Lock className="ml-auto h-3.5 w-3.5" /></p>
@@ -433,6 +489,16 @@ export default function CampusView() {
           </div>
         )}
         <input ref={fileRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { openFile(e.target.files?.[0]); e.target.value = ""; }} />
+        {loadingMore && (
+          <p className="pointer-events-none absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/65 px-3 py-1 text-xs text-sky-100 ring-1 ring-white/10 backdrop-blur">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading more of the map…
+          </p>
+        )}
+        {osm && (
+          <p className="pointer-events-none absolute bottom-2 left-3 max-w-[60%] text-[11px] text-neutral-400">
+            {touch ? "One finger: move · Two fingers: zoom, tilt and turn" : "Drag: move · Scroll: zoom · Hold click + scroll, or right-drag: tilt and turn"}
+          </p>
+        )}
         {occ && (
           <div className="pointer-events-none absolute left-3 top-3 max-w-[70%] rounded-xl bg-black/65 px-3 py-2 text-xs text-white ring-1 ring-amber-400/40 backdrop-blur">
             <p className="flex items-center gap-2 font-semibold text-amber-200">

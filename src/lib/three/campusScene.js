@@ -7,6 +7,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { extrude, ribbon } from "./lotScene.js";
 import { LEVEL_COLOR, occupancyLevel } from "../occupancySim.js";
+import { toLocalBox } from "../osm.js";
 
 // Map-app palettes. "site" is the complex's own buildings; "around" the
 // neighbourhood (drawn closer to the ground colour so the complex stands out).
@@ -42,6 +43,28 @@ export class CampusScene {
     this.camera = new THREE.PerspectiveCamera(42, 1, 1, 20000);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
+    // Like a map app. Computer: drag moves the map, scroll zooms; tilt and
+    // turn with the right button (or Ctrl/⌘ + drag), or hold a button down
+    // and scroll. Phone: one finger moves; two fingers zoom, tilt and turn.
+    this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+    this.controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
+    this.controls.screenSpacePanning = false; // move along the ground
+    this.controls.minPolarAngle = 0;
+    this.controls.addEventListener("end", () => this.onViewChange?.(this.view()));
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    // A button held down (tracked here: not every browser reports it on
+    // scroll events) turns scrolling into tilting.
+    this.held = 0;
+    canvas.addEventListener("pointerdown", (e) => { if (e.pointerType === "mouse") this.held += 1; }, true);
+    const release = () => { this.held = 0; };
+    window.addEventListener("pointerup", release, true);
+    canvas.addEventListener("pointercancel", release, true);
+    canvas.addEventListener("wheel", (e) => {
+      if (!this.held && !e.buttons) return; // plain scroll: zoom (OrbitControls)
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.tilt(Math.sign(e.deltaY) * Math.min(0.15, Math.abs(e.deltaY) * 0.0012));
+    }, { capture: true, passive: false });
     this.controls.maxPolarAngle = Math.PI * 0.46;
     this.controls.minDistance = 30;
     this.controls.maxDistance = 6000;
@@ -96,13 +119,30 @@ export class CampusScene {
 
   stop() { this.running = false; cancelAnimationFrame(this.raf); }
 
+  /** Tilt the view (radians; + looks more from the side). */
+  tilt(d) {
+    const t = this.controls.target;
+    const off = this.camera.position.clone().sub(t);
+    const sph = new THREE.Spherical().setFromVector3(off);
+    sph.phi = Math.max(this.controls.minPolarAngle + 0.01, Math.min(this.controls.maxPolarAngle, sph.phi + d));
+    this.camera.position.copy(t).add(new THREE.Vector3().setFromSpherical(sph));
+    this.camera.lookAt(t);
+    this.onViewChange?.(this.view());
+  }
+
+  /** Where the view is: its centre (local metres) and distance. */
+  view() {
+    const t = this.controls.target;
+    return { x: t.x, y: t.z, distance: this.camera.position.distanceTo(t) };
+  }
+
   // The view stays over the map (it fades out at its edge), and fine detail
   // is dropped when zoomed far out.
   keepInside() {
-    const R = this.radius, h = this.half;
-    if (!R || !h) return;
+    const R = this.radius, pb = this.panBox;
+    if (!R || !pb) return;
     const t = this.controls.target;
-    const cx = Math.max(-h.x, Math.min(h.x, t.x)), cz = Math.max(-h.z, Math.min(h.z, t.z));
+    const cx = Math.max(pb.minX, Math.min(pb.maxX, t.x)), cz = Math.max(pb.minY, Math.min(pb.maxY, t.z));
     if (cx !== t.x || cz !== t.z) {
       const dx = cx - t.x, dz = cz - t.z;
       t.x = cx; t.z = cz;
@@ -256,14 +296,17 @@ export class CampusScene {
     if (!osm) return;
     this.scene.background = new THREE.Color(t.bg);
     this.radius = this.mapRadius();
+    this.controls.maxDistance = Math.max(400, this.radius * 3);
+    this.camera.far = Math.max(8000, this.radius * 12);
+    this.camera.updateProjectionMatrix();
     this.scene.fog = new THREE.Fog(t.bg, 1, 2);
     this.fitFog();
     this.detail = [];
     this.hemi.color.set(t.hemi[0]); this.hemi.groundColor.set(t.hemi[1]); this.hemi.intensity = t.hemi[2];
     this.sun.intensity = t.sun;
-    const ground = new THREE.Mesh(new THREE.CircleGeometry(this.radius * 3, 96), new THREE.MeshBasicMaterial({ color: t.ground }));
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(this.radius * 4, 96), new THREE.MeshBasicMaterial({ color: t.ground }));
     ground.rotation.x = -Math.PI / 2;
-    ground.position.set(0, -0.1, 0);
+    ground.position.set(this.half.cx, -0.1, this.half.cz);
     this.root.add(ground);
 
     const flat = (polys, color, y, order) => {
@@ -482,16 +525,31 @@ export class CampusScene {
 
   /** Radius (m) of the downloaded area around the map's origin (its centre). */
   mapRadius() {
-    const b = this.osm?.bounds;
-    const m = this.osm?.margin || 0;
+    // The loaded area (in local metres; it grows as more of a big place is
+    // loaded) fades at its edge; the view can move over the whole place.
+    const o = this.osm;
+    const b = o?.bounds;
+    let box;
     if (b && Number.isFinite(b.minlat)) {
+      const m = o.margin || 0;
       const kx = 111320 * Math.cos((((b.minlat + b.maxlat) / 2) * Math.PI) / 180);
-      this.half = { x: ((b.maxlon - b.minlon) / 2) * kx + m, z: ((b.maxlat - b.minlat) / 2) * 110540 + m };
+      const hx = ((b.maxlon - b.minlon) / 2) * kx + m, hz = ((b.maxlat - b.minlat) / 2) * 110540 + m;
+      box = { minX: -hx, maxX: hx, minY: -hz, maxY: hz };
+      for (const l of o.loaded || []) {
+        const q = toLocalBox(b, l);
+        box = { minX: Math.min(box.minX, q.minX), maxX: Math.max(box.maxX, q.maxX), minY: Math.min(box.minY, q.minY), maxY: Math.max(box.maxY, q.maxY) };
+      }
+      this.panBox = o.full ? toLocalBox(b, o.full) : box;
+      this.panBox = { minX: Math.min(this.panBox.minX, box.minX), maxX: Math.max(this.panBox.maxX, box.maxX), minY: Math.min(this.panBox.minY, box.minY), maxY: Math.max(this.panBox.maxY, box.maxY) };
     } else {
       const e = this.extent();
-      this.half = { x: e.w / 2 + Math.abs(e.cx), z: e.h / 2 + Math.abs(e.cz) };
+      const hx = e.w / 2 + Math.abs(e.cx), hz = e.h / 2 + Math.abs(e.cz);
+      box = { minX: -hx, maxX: hx, minY: -hz, maxY: hz };
+      this.panBox = box;
     }
-    RF_BOX.value.set(this.half.x, this.half.z);
+    this.loadedBox = box;
+    this.half = { x: (box.maxX - box.minX) / 2, z: (box.maxY - box.minY) / 2, cx: (box.maxX + box.minX) / 2, cz: (box.maxY + box.minY) / 2 };
+    RF_BOX.value.set(this.half.cx, this.half.cz, this.half.x, this.half.z);
     return Math.max(this.half.x, this.half.z);
   }
 
@@ -535,18 +593,15 @@ export class CampusScene {
     // The complex itself when it has an outline, else the whole map.
     // Only the part of the outline inside the downloaded area (a university
     // outline can take in an airport and farms far away).
-    const hx = this.half.x, hz = this.half.z;
-    const pts = (this.osm.outline || []).flatMap((o) => o.outer).map((q) => ({ x: Math.max(-hx, Math.min(hx, q.x)), y: Math.max(-hz, Math.min(hz, q.y)) }));
-    let cx = 0, cz = 0, w = this.half.x * 1.7, h = this.half.z * 1.7;
+    const lb = this.loadedBox;
+    const pts = (this.osm.outline || []).flatMap((o) => o.outer).map((q) => ({ x: Math.max(lb.minX, Math.min(lb.maxX, q.x)), y: Math.max(lb.minY, Math.min(lb.maxY, q.y)) }));
+    let cx = this.half.cx, cz = this.half.cz, w = this.half.x * 1.7, h = this.half.z * 1.7;
     if (pts.length) {
       const xs = pts.map((p) => p.x), zs = pts.map((p) => p.y);
       cx = (Math.min(...xs) + Math.max(...xs)) / 2; cz = (Math.min(...zs) + Math.max(...zs)) / 2;
       w = Math.min(w, Math.max(...xs) - Math.min(...xs) + 160); h = Math.min(h, Math.max(...zs) - Math.min(...zs) + 160);
     }
     const dist = Math.max(w / Math.max(0.6, this.camera.aspect), h) * 1.15 + 40;
-    this.controls.maxDistance = Math.max(400, this.radius * 3);
-    this.camera.far = Math.max(8000, this.radius * 12);
-    this.camera.updateProjectionMatrix();
     this.flyTo({ x: cx, z: cz }, Math.max(150, dist), snap);
   }
 
@@ -611,7 +666,7 @@ function paintGroups(geo, colors) {
 // Fog by position on the map instead of distance from the camera: the map
 // fades softly into the background at the edge of the downloaded area (a
 // rounded rectangle, the area's half-size in RF_BOX), at any zoom.
-const RF_BOX = { value: new THREE.Vector2(1000, 1000) };
+const RF_BOX = { value: new THREE.Vector4(0, 0, 1000, 1000) }; // centre x, z; half-size x, z
 function radialFog(group) {
   group.traverse((o) => {
     const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
@@ -622,8 +677,8 @@ function radialFog(group) {
       const sprite = m.isSpriteMaterial;
       m.onBeforeCompile = (shader) => {
         shader.uniforms.rfBox = RF_BOX;
-        const depth = "vec2 rfQ = abs(rfXZ) / rfBox; vFogDepth = pow(pow(rfQ.x, 4.0) + pow(rfQ.y, 4.0), 0.25);";
-        shader.vertexShader = "uniform vec2 rfBox;\n" + shader.vertexShader.replace("#include <fog_vertex>", sprite
+        const depth = "vec2 rfQ = abs(rfXZ - rfBox.xy) / rfBox.zw; vFogDepth = pow(pow(rfQ.x, 4.0) + pow(rfQ.y, 4.0), 0.25);";
+        shader.vertexShader = "uniform vec4 rfBox;\n" + shader.vertexShader.replace("#include <fog_vertex>", sprite
           ? `#ifdef USE_FOG\n vec2 rfXZ = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xz; ${depth}\n#endif`
           : `#ifdef USE_FOG
   vec4 rfWorld = vec4(transformed, 1.0);

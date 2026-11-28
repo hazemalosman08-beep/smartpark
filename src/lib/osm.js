@@ -253,15 +253,13 @@ async function cachePut(key, data) {
 }
 
 /** Everything needed for the 3D map inside the bounds (plus a margin, in metres). */
-export async function fetchArea(bounds, { margin = 300, signal, onStatus, fresh = false, outlineOf = null } = {}) {
-  const outlineP = outlineOf ? fetchOutline(outlineOf, { signal, fresh }).catch(() => null) : Promise.resolve(null);
-  const dLat = margin / 111320, dLon = margin / (111320 * Math.cos(((bounds.minlat + bounds.maxlat) / 2) * Math.PI / 180));
-  const box = { minlat: bounds.minlat - dLat, minlon: bounds.minlon - dLon, maxlat: bounds.maxlat + dLat, maxlon: bounds.maxlon + dLon };
+/** Map data (Overpass JSON elements) for a box; downloaded once, then cached. */
+export async function fetchRaw(box, { signal, onStatus, fresh = false } = {}) {
   const key = cacheKey(box);
   let data = fresh ? null : await cacheGet(key);
-  if (!data) {
-    const bb = [box.minlat, box.minlon, box.maxlat, box.maxlon].map((v) => v.toFixed(6)).join(",");
-    const q = `[out:json][timeout:25][bbox:${bb}];
+  if (data) { onStatus?.("Opening the saved map…"); return data; }
+  const bb = [box.minlat, box.minlon, box.maxlat, box.maxlon].map((v) => v.toFixed(6)).join(",");
+  const q = `[out:json][timeout:25][bbox:${bb}];
 (
   way["building"]; relation["building"]["type"="multipolygon"];
   way["building:part"];
@@ -280,22 +278,68 @@ export async function fetchArea(bounds, { margin = 300, signal, onStatus, fresh 
   way["railway"~"^(rail|light_rail|tram|subway)$"];
 );
 out geom tags;`;
-    onStatus?.("Downloading map data…");
-    // The main Overpass server first; if it has not answered in a few
-    // seconds a mirror joins, then OpenStreetMap's own server (in tiles).
-    data = await race([
-      { run: (s) => overpassOne(OVERPASS_SERVERS[0], q, s) },
-      { after: 5000, run: (s) => overpassOne(OVERPASS_SERVERS[1], q, s) },
-      { after: 3000, run: (s) => fetchFromOsmApi(box, { signal: s, onStatus }) },
-      { after: 10000, run: (s) => overpassOne(OVERPASS_SERVERS[2], q, s) },
-    ], signal);
-    cachePut(key, data);
-  } else {
-    onStatus?.("Opening the saved map…");
-  }
+  onStatus?.("Downloading map data…");
+  // The main Overpass server first; if it has not answered in a few
+  // seconds a mirror joins, then OpenStreetMap's own server (in tiles).
+  data = await race([
+    { run: (s) => overpassOne(OVERPASS_SERVERS[0], q, s) },
+    { after: 5000, run: (s) => overpassOne(OVERPASS_SERVERS[1], q, s) },
+    { after: 3000, run: (s) => fetchFromOsmApi(box, { signal: s, onStatus }) },
+    { after: 10000, run: (s) => overpassOne(OVERPASS_SERVERS[2], q, s) },
+  ], signal);
+  cachePut(key, data);
+  return data;
+}
+
+const marginBox = (b, margin) => {
+  const dLat = margin / 111320, dLon = margin / (111320 * Math.cos(((b.minlat + b.maxlat) / 2) * Math.PI / 180));
+  return { minlat: b.minlat - dLat, minlon: b.minlon - dLon, maxlat: b.maxlat + dLat, maxlon: b.maxlon + dLon };
+};
+
+/** Everything needed for the 3D map inside the bounds (plus a margin, in metres). */
+export async function fetchArea(bounds, { margin = 300, signal, onStatus, fresh = false, outlineOf = null } = {}) {
+  const outlineP = outlineOf ? fetchOutline(outlineOf, { signal, fresh }).catch(() => null) : Promise.resolve(null);
+  const box = marginBox(bounds, margin);
+  const data = await fetchRaw(box, { signal, onStatus, fresh });
   const outline = await outlineP;
   onStatus?.("Building the 3D map…");
-  return { ...parseOsm(data, bounds, { outline }), fetchedAt: new Date().toISOString(), bounds, margin };
+  return { ...parseOsm(data, bounds, { outline }), fetchedAt: new Date().toISOString(), bounds, margin, loaded: [box] };
+}
+
+/**
+ * More of a big place: the box's data, in the same local metres as the map
+ * already loaded, merged in (each feature once). Buildings and lots are in
+ * the complex when they are inside its outline.
+ */
+export async function fetchMore(osm, box, { signal } = {}) {
+  const data = await fetchRaw(box, { signal });
+  return mergeOsm(osm, parseOsm(data, osm.bounds), box);
+}
+
+export function mergeOsm(base, extra, box) {
+  const out = { ...base, loaded: [...(base.loaded || []), box] };
+  const inOutline = (pt) => !base.outline?.length || base.outline.some((o) => inside(pt, o.outer) && !o.holes.some((h) => inside(pt, h)));
+  for (const k of ["buildings", "parking", "roads", "paths", "green", "water", "trees", "rails"]) {
+    const seen = new Set((base[k] || []).map((f) => f.id));
+    const add = (extra[k] || []).filter((f) => !f.id || !seen.has(f.id));
+    if (k === "buildings" || k === "parking") for (const f of add) f.inComplex = inOutline(interiorPoint(f.outer));
+    out[k] = [...(base[k] || []), ...add];
+  }
+  return out;
+}
+
+/** Lat/lon box -> local metres of a map loaded for `bounds` (x east, y south). */
+export function toLocalBox(bounds, b) {
+  const lat0 = (bounds.minlat + bounds.maxlat) / 2, lon0 = (bounds.minlon + bounds.maxlon) / 2;
+  const kx = 111320 * Math.cos((lat0 * Math.PI) / 180), ky = 110540;
+  return { minX: (b.minlon - lon0) * kx, maxX: (b.maxlon - lon0) * kx, minY: -(b.maxlat - lat0) * ky, maxY: -(b.minlat - lat0) * ky };
+}
+
+/** Local metres -> lat/lon (inverse of the projection in parseOsm). */
+export function toLatLon(bounds, x, y) {
+  const lat0 = (bounds.minlat + bounds.maxlat) / 2, lon0 = (bounds.minlon + bounds.maxlon) / 2;
+  const kx = 111320 * Math.cos((lat0 * Math.PI) / 180), ky = 110540;
+  return { lat: lat0 - y / ky, lon: lon0 + x / kx };
 }
 
 /**
@@ -409,7 +453,8 @@ export function parseOsm(data, bounds, { outline = null } = {}) {
     if (e.type !== "node" && !t.building && (SITE_AMENITY.test(t.amenity || "") || SITE_LANDUSE.test(t.landuse || "") || t.leisure === "stadium")) {
       for (const poly of polygons(e)) sites.push({ ...poly, name: t.name || "", area: Math.abs(polyArea(poly.outer)) });
     }
-    if (e.type === "node" && t.natural === "tree") { out.trees.push(P(e)); continue; }
+    const fid = `${e.type}/${e.id}`;
+    if (e.type === "node" && t.natural === "tree") { out.trees.push({ ...P(e), id: fid }); continue; }
     if (e.type === "node" && t.amenity === "parking") {
       // Parking mapped as a single point: a square of about its size
       // (capacity x 25 m², else ~20 spaces) around it, marked approximate.
@@ -448,19 +493,19 @@ export function parseOsm(data, bounds, { outline = null } = {}) {
     if (t.highway && e.type === "way") {
       const line = ring(e.geometry);
       if (line.length < 2) continue;
-      if (/^(footway|path|pedestrian|steps|cycleway|corridor|track|bridleway)$/.test(t.highway) || t.area === "yes") out.paths.push({ line, kind: t.highway });
-      else out.roads.push({ line, kind: t.highway, width: roadWidth(t), name: t.name || "", service: t.service || "" });
+      if (/^(footway|path|pedestrian|steps|cycleway|corridor|track|bridleway)$/.test(t.highway) || t.area === "yes") out.paths.push({ line, kind: t.highway, id: fid });
+      else out.roads.push({ line, kind: t.highway, width: roadWidth(t), name: t.name || "", service: t.service || "", id: fid });
       continue;
     }
-    if (t.railway && e.type === "way") { const line = ring(e.geometry); if (line.length >= 2) out.rails.push({ line, kind: t.railway }); continue; }
+    if (t.railway && e.type === "way") { const line = ring(e.geometry); if (line.length >= 2) out.rails.push({ line, kind: t.railway, id: fid }); continue; }
     if (t.natural === "water" || t.water || t.waterway) {
-      if (e.type === "way" && t.waterway) { const line = ring(e.geometry); if (line.length >= 2) out.water.push({ line, width: 8 }); continue; }
-      for (const poly of polygons(e)) out.water.push(poly);
+      if (e.type === "way" && t.waterway) { const line = ring(e.geometry); if (line.length >= 2) out.water.push({ line, width: 8, id: fid }); continue; }
+      polygons(e).forEach((poly, i) => out.water.push({ ...poly, id: `${fid}#${i}` }));
       continue;
     }
     if (GREEN_LEISURE.test(t.leisure || "") || GREEN_LANDUSE.test(t.landuse || "") || GREEN_NATURAL.test(t.natural || "")) {
       const kind = t.natural === "wood" || t.landuse === "forest" ? "wood" : t.leisure === "pitch" || t.leisure === "track" ? "pitch" : "grass";
-      for (const poly of polygons(e)) out.green.push({ ...poly, kind });
+      polygons(e).forEach((poly, i) => out.green.push({ ...poly, kind, id: `${fid}#${i}` }));
     }
   }
   // The complex's own outline: buildings inside it belong to the complex,
