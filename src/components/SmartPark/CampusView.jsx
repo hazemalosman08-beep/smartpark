@@ -6,7 +6,7 @@ import FeedGuide from "@/components/SmartPark/FeedGuide";
 import AerialDrop from "@/components/SmartPark/AerialDrop";
 import { placementFor, pointToPolygon, toCampus } from "@/lib/feedPlacement";
 import { deriveLot, normalizeCalibration } from "@/lib/vision/lot";
-import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, fetchRaw, mainOutlineBounds, mergeOsm, tilesToLoad, toLatLon, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
+import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, fetchRaw, mainOutlineBounds, mergeOsm, tilesToLoad, toLatLon, toLocalBox, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
 import { STATES, stateByCode } from "@/lib/usStates";
@@ -169,7 +169,7 @@ let visitOsm = null;
 export default function CampusView({ mode = "user", feeds = [], activeFeedId = null, onAddFeed, onOpenFeed, onRemoveFeed,
   feedSetup = null, setupSpaces = 0, onSaveFeed, onCancelFeed, cameraSlot = null, showInside = null, onPlaceFeed, onAerialDone, onSkipAerial }) {
   const staff = mode === "staff";
-  const [aerial, setAerial] = useState(null); // step 1 of a feed: { blob, calibration }
+  const [aerial, setAerial] = useState(null); // step 1 of a feed: { blob, calibration, geo }
   const canvasRef = useRef(null);
   const engine = useRef(null);
   const fileRef = useRef(null);
@@ -319,6 +319,11 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
   // Inside a live lot: its own 3D guide (by feed id, so it follows new readings).
   const [insideId, setInsideId] = useState(null);
   const insideFeed = placeFeeds.find((f) => f.id === insideId) || null;
+  // The lot being set up, as lat/lon (to fetch its satellite image online).
+  const setupOutline = useMemo(() => {
+    const lot = feedSetup && osm?.parking.find((p) => p.id === feedSetup.lotId);
+    return lot ? lot.outer.map((q) => toLatLon(osm.bounds, q.x, q.y)) : null;
+  }, [feedSetup?.lotId, osm]); // eslint-disable-line react-hooks/exhaustive-deps
   // A feed just saved: show its lot on the map, space by space.
   useEffect(() => {
     const f = feeds.find((x) => x.id === showInside?.id);
@@ -341,7 +346,12 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
       if (!stalls.length) continue;
       const L = plan.lot;
       const fill = f.aerial ? (L.rectified ? { w: L.width, h: L.height } : { w: 100 * (normalizeCalibration(f.calibration).aspect || 1.5), h: 100 }) : null;
-      const pl = placementFor(stalls, lot.outer, f.placement || {}, { fill });
+      // Fetched online: placed by its real corners on the map.
+      const geoBox = f.geo ? toLocalBox(osm.bounds, f.geo) : null;
+      const pl = geoBox && fill
+        ? { pcx: fill.w / 2, pcy: fill.h / 2, cx: (geoBox.minX + geoBox.maxX) / 2 + (f.placement?.dx || 0), cy: (geoBox.minY + geoBox.maxY) / 2 + (f.placement?.dy || 0), angle: 0, flip: false,
+          sx: (geoBox.maxX - geoBox.minX) / fill.w, sy: (geoBox.maxY - geoBox.minY) / fill.h, scale: Math.sqrt(((geoBox.maxX - geoBox.minX) / fill.w) * ((geoBox.maxY - geoBox.minY) / fill.h)) }
+        : placementFor(stalls, lot.outer, f.placement || {}, { fill });
       const stale = feedOcc.get(f.lotId)?.stale;
       const statuses = feedStatuses(f);
       out.push({
@@ -795,7 +805,7 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
                   : <>Now the <b>lot&apos;s camera</b>: Webcam, Phone camera, or a photo / video of it. Map its spaces (Find spaces automatically, or draw them).{feedSetup.aerialCal ? " Next you click 4 matching points on the camera and the satellite picture, so the camera's readings land on the right spaces." : ""}</>}
               </p>
             </section>
-            {feedSetup.stage === "aerial" ? <AerialDrop key={feedSetup.id} onReady={setAerial} /> : <div className="p-3">{cameraSlot}</div>}
+            {feedSetup.stage === "aerial" ? <AerialDrop key={feedSetup.id} onReady={setAerial} lotOutline={setupOutline} /> : <div className="p-3">{cameraSlot}</div>}
           </div>
         )}
         {liveLots.map((l) => (

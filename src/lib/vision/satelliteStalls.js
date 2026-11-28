@@ -14,9 +14,14 @@
 // Spaces come back as polygons in picture percent (x, y 0..100), front
 // edge first, like the other finders.
 
-function grayOf({ data, width, height }) {
+// Paint, white or yellow: brightness plus "yellowness" (red and green over
+// blue), so yellow lines on light pavement stand out as much as white ones.
+function grayOf({ data, width, height }, yellow = 0) {
   const g = new Float32Array(width * height);
-  for (let i = 0; i < width * height; i += 1) g[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
+  for (let i = 0; i < width * height; i += 1) {
+    const r = data[i * 4], gg = data[i * 4 + 1], b = data[i * 4 + 2];
+    g[i] = 0.299 * r + 0.587 * gg + 0.114 * b + yellow * Math.max(0, (r + gg) / 2 - b);
+  }
   return g;
 }
 
@@ -55,28 +60,79 @@ function lineAngles(r, w, h) {
     bins[Math.floor((a / Math.PI) * 90) % 90] += Math.sqrt(m);
   }
   const sm = bins.map((_, i) => bins[(i + 89) % 90] + 2 * bins[i] + bins[(i + 1) % 90]);
-  let best = 0;
-  for (let i = 1; i < 90; i += 1) if (sm[i] > sm[best]) best = i;
-  const a1 = ((best + 0.5) / 90) * Math.PI;
-  return [a1, (a1 + Math.PI / 2) % Math.PI];
+  // The strongest directions (dividers, row edges), at least 10 degrees apart.
+  const peaks = [];
+  const order = [...sm.keys()].filter((i) => sm[i] >= sm[(i + 89) % 90] && sm[i] >= sm[(i + 1) % 90]).sort((i, j) => sm[j] - sm[i]);
+  for (const i of order) {
+    if (peaks.length >= 3 || sm[i] < sm[order[0]] * 0.25) break;
+    if (peaks.some((q) => Math.min(Math.abs(q - i), 90 - Math.abs(q - i)) < 5)) continue;
+    peaks.push(i);
+  }
+  const out = peaks.map((i) => ((i + 0.5) / 90) * Math.PI);
+  if (out.length) out.push((out[0] + Math.PI / 2) % Math.PI);
+  return out;
 }
 
 // The marks turned so lines at `angle` stand upright (nearest sampling).
-function rotated(r, w, h, angle) {
+// shear: after turning, y' = y - shear * x (rows of angled spaces made
+// horizontal while the dividers stay upright).
+function rotated(r, w, h, angle, shear = 0) {
   const t = angle - Math.PI / 2; // turn the line direction to vertical
   const c = Math.cos(t), s = Math.sin(t);
-  const W = Math.ceil(Math.abs(w * c) + Math.abs(h * s)), H = Math.ceil(Math.abs(w * s) + Math.abs(h * c));
+  const W = Math.ceil(Math.abs(w * c) + Math.abs(h * s)), H0 = Math.ceil(Math.abs(w * s) + Math.abs(h * c));
+  const H = Math.ceil(H0 + Math.abs(shear) * W);
   const out = new Float32Array(W * H);
   const cx = w / 2, cy = h / 2, CX = W / 2, CY = H / 2;
   for (let Y = 0; Y < H; Y += 1) for (let X = 0; X < W; X += 1) {
-    // Rotated -> original: rotate back by t.
-    const dx = X - CX, dy = Y - CY;
+    // Sheared, rotated -> original: undo the shear, rotate back by t.
+    const dx = X - CX, dy = Y - CY + shear * (X - CX);
     const x = Math.round(cx + dx * c - dy * s), y = Math.round(cy + dx * s + dy * c);
     if (x >= 0 && x < w && y >= 0 && y < h) out[Y * W + X] = r[y * w + x];
     else out[Y * W + X] = -1; // outside the picture
   }
-  const back = (X, Y) => { const dx = X - CX, dy = Y - CY; return { x: cx + dx * c - dy * s, y: cy + dx * s + dy * c }; };
+  const back = (X, Y) => { const dx = X - CX, dy = Y - CY + shear * (X - CX); return { x: cx + dx * c - dy * s, y: cy + dx * s + dy * c }; };
   return { R: out, W, H, back };
+}
+
+// Directions in which the marks repeat most regularly: the picture (made
+// small) is turned in 2 degree steps; for each, how strongly pixel rows
+// repeat at some spacing. Robust to picture and tile edges.
+function periodicAngles(r, w, h, { minP, maxP }) {
+  const k = Math.min(1, 260 / Math.max(w, h));
+  const sw = Math.max(8, Math.round(w * k)), sh = Math.max(8, Math.round(h * k));
+  const small = new Float32Array(sw * sh);
+  for (let y = 0; y < sh; y += 1) for (let x = 0; x < sw; x += 1) {
+    let m = 0;
+    const x0 = Math.floor(x / k), y0 = Math.floor(y / k), x1 = Math.min(w, Math.floor((x + 1) / k)), y1 = Math.min(h, Math.floor((y + 1) / k));
+    for (let yy = y0; yy < Math.max(y0 + 1, y1); yy += 1) for (let xx = x0; xx < Math.max(x0 + 1, x1); xx += 1) m = Math.max(m, r[yy * w + xx] || 0);
+    small[y * sw + x] = m;
+  }
+  const lo = Math.max(2, Math.floor(minP * k)), hi = Math.max(lo + 2, Math.ceil(maxP * k));
+  const score = [];
+  for (let d = 0; d < 180; d += 2) {
+    const a = (d * Math.PI) / 180;
+    const { R, W, H } = rotated(small, sw, sh, a);
+    let sum = 0, cnt = 0;
+    for (let i = 0; i < R.length; i += 1) if (R[i] >= 0) { sum += R[i]; cnt += 1; }
+    const mean = cnt ? sum / cnt : 0;
+    const lag = new Float32Array(hi + 2);
+    for (let y = 0; y < H; y += 2) {
+      const c0 = rowCorr(R, W, y, 0, mean);
+      if (c0 <= 0) continue;
+      for (let L = lo; L <= hi + 1; L += 1) lag[L] += rowCorr(R, W, y, L, mean) / c0;
+    }
+    let best = 0;
+    for (let L = lo + 1; L <= hi; L += 1) if (lag[L] > lag[L - 1] && lag[L] >= lag[L + 1]) best = Math.max(best, lag[L] - Math.min(lag[L - 1], lag[L + 1]) * 0.5);
+    score.push({ a, s: best });
+  }
+  score.sort((p1, p2) => p2.s - p1.s);
+  const out = [];
+  for (const c of score) {
+    if (out.length >= 2) break;
+    if (out.some((o) => Math.min(Math.abs(o - c.a), Math.PI - Math.abs(o - c.a)) < 0.12)) continue;
+    out.push(c.a);
+  }
+  return out;
 }
 
 // Autocorrelation of row y at lag L (mean-removed, only inside the picture).
@@ -245,6 +301,7 @@ function findInRotation(R, W, H, { minP, maxP }) {
  * minSpace / maxSpace: space width range in pixels.
  */
 export function findSatelliteStalls(pixels, opts = {}) {
+  opts = { ...opts, angleCache: new Map() };
   // The same lot can come as a small screenshot or a big image: try a few
   // sizes and keep the one with the most spaces in long regular rows.
   let best = null;
@@ -257,21 +314,20 @@ export function findSatelliteStalls(pixels, opts = {}) {
   return best;
 }
 
-// The middle of a space looks like pavement: grey (low colour saturation)
-// and neither black (picture borders, shadows) nor dark green (trees).
+// The middle of a space looks like pavement: not green and not dark.
 function onPavement({ data, width, height }, poly) {
   const cx = poly.reduce((a, p) => a + p.x, 0) / 4, cy = poly.reduce((a, p) => a + p.y, 0) / 4;
   const rx = Math.max(1, Math.abs(poly[1].x - poly[0].x) / 4 + Math.abs(poly[1].y - poly[0].y) / 4);
-  let sat = 0, lum = 0, n = 0;
+  let green = 0, lum = 0, n = 0;
   for (let dy = -rx; dy <= rx; dy += 1) for (let dx = -rx; dx <= rx; dx += 1) {
     const x = Math.round(cx + dx), y = Math.round(cy + dy);
     if (x < 0 || y < 0 || x >= width || y >= height) continue;
     const i = (y * width + x) * 4, r = data[i], g = data[i + 1], b = data[i + 2];
-    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-    sat += mx ? (mx - mn) / mx : 0; lum += (r + g + b) / 3; n += 1;
+    green += g - (r + b) / 2; lum += (r + g + b) / 3; n += 1;
   }
   if (!n) return false;
-  return sat / n < 0.22 && lum / n > 60;
+  // Grey or beige pavement; not green (trees, grass), not dark (shade, borders).
+  return green / n < 10 && lum / n > 70;
 }
 
 // Box-filtered smaller copy of an RGBA picture.
@@ -287,18 +343,48 @@ function shrink({ data, width, height }, w, h) {
   return { data: out, width: w, height: h };
 }
 
-function findAtScale(pixels, { minSpace = 5, maxSpace = 40 } = {}) {
+function findAtScale(pixels, opts = {}) {
+  let best = null;
+  for (const yellow of [0, 3]) {
+    const r = findAtScaleWith(pixels, { ...opts, yellow });
+    if (!best || r.stalls.length > best.stalls.length) best = r;
+  }
+  return best;
+}
+
+function findAtScaleWith(pixels, { minSpace = 5, maxSpace = 40, yellow = 0, angleCache = null } = {}) {
   const { width: w, height: h } = pixels;
-  const g = grayOf(pixels);
+  const g = grayOf(pixels, yellow);
   const bg = boxBlur(g, w, h, Math.max(2, Math.round(Math.min(w, h) / 120)));
   const r = new Float32Array(w * h);
   for (let i = 0; i < w * h; i += 1) r[i] = Math.max(0, g[i] - bg[i]);
   let best = null;
-  for (const a of lineAngles(r, w, h)) {
-    for (const da of [0, -0.02, 0.02]) {
-      const rot = rotated(r, w, h, a + da);
+  const grad = lineAngles(r, w, h);
+  // Directions do not change with size: found once (on the first, biggest pass).
+  const key = `y${yellow}`;
+  if (!angleCache?.has(key)) angleCache?.set(key, periodicAngles(r, w, h, { minP: minSpace, maxP: maxSpace }));
+  const per = angleCache ? angleCache.get(key) : periodicAngles(r, w, h, { minP: minSpace, maxP: maxSpace });
+  const angles = [...per, ...grad.filter((g) => !per.some((q) => Math.min(Math.abs(q - g), Math.PI - Math.abs(q - g)) < 0.05))];
+  const cands = [];
+  for (const a of per) for (const da of [0, -0.017, 0.017]) cands.push({ a: a + da, shear: 0 });
+  for (const a of angles) {
+    cands.push({ a, shear: 0 });
+    // Angled spaces: the rows run along another strong direction.
+    for (const b of angles) {
+      let th = b + Math.PI / 2 - a; // the row direction after the turn
+      th = ((th % Math.PI) + Math.PI) % Math.PI;
+      if (th > Math.PI / 2) th -= Math.PI;
+      if (Math.abs(th) > 0.08 && Math.abs(th) < 1.1) cands.push({ a, shear: Math.tan(th) });
+    }
+  }
+  for (const { a, shear } of cands) {
+    {
+      const rot = rotated(r, w, h, a, shear);
       const found = findInRotation(rot.R, rot.W, rot.H, { minP: minSpace, maxP: Math.min(maxSpace, Math.floor(rot.W / 4)) });
-      if (!best || found.score > best.found.score) best = { rot, found };
+      // The most regular direction (first) is trusted; another direction or
+      // a slant must find clearly more (slants fit texture too easily).
+      const need = !best ? 0 : best.first ? best.found.score * (shear ? 1.5 : 1.25) : best.found.score;
+      if (!best || found.score > need) best = { rot, found, first: !best };
     }
   }
   if (!best?.found.stalls.length) return { stalls: [], spacing: 0 };

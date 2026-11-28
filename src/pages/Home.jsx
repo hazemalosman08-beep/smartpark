@@ -188,10 +188,10 @@ export default function Home() {
     }
   }, []);
   // Step 1 done: keep the satellite picture and its spaces; on to the camera.
-  const aerialDone = useCallback(async ({ blob, calibration: aerialCal }) => {
+  const aerialDone = useCallback(async ({ blob, calibration: aerialCal, geo = null }) => {
     const f = feedSetup;
     if (blob) await feedPictures.save(f.id, blob);
-    setFeedSetup({ ...f, stage: "camera", aerialCal });
+    setFeedSetup({ ...f, stage: "camera", aerialCal, aerialGeo: geo });
     resetCamera();
   }, [feedSetup]);
   const skipAerial = useCallback(() => { setFeedSetup((f) => ({ ...f, stage: "camera", aerialCal: null })); resetCamera(); }, []);
@@ -221,8 +221,8 @@ export default function Home() {
     const f = feedSetup;
     const statuses = mapToAerial(f.aerialCal, f.cameraCal, link, liveRef.current.statuses);
     const reading = readingFrom(f.aerialCal, statuses);
-    const { stage, aerialCal, cameraCal, ...rest } = f; // eslint-disable-line no-unused-vars
-    setFeeds((prev) => [...prev.filter((x) => x.id !== f.id), { ...rest, calibration: aerialCal, aerial: true, camera: { calibration: cameraCal, link }, reading, updatedAt: new Date().toISOString() }]);
+    const { stage, aerialCal, cameraCal, aerialGeo, ...rest } = f; // eslint-disable-line no-unused-vars
+    setFeeds((prev) => [...prev.filter((x) => x.id !== f.id), { ...rest, calibration: aerialCal, aerial: true, geo: aerialGeo || null, camera: { calibration: cameraCal, link }, reading, updatedAt: new Date().toISOString() }]);
     setActiveFeedId(f.id);
     setFeedSetup(null);
     setShowInside({ id: f.id, nonce: Date.now() });
