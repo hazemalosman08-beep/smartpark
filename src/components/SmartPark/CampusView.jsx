@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock, MapPin, Moon, Plus, Search, ShieldCheck, Sun, Video, X } from "lucide-react";
-import { feedOccupancy, placeKey } from "@/lib/campusFeeds";
+import { feedOccupancy, feedStatuses, placeKey } from "@/lib/campusFeeds";
 import LiveLotView from "@/components/SmartPark/LiveLotView";
+import { placementFor, pointToPolygon, toCampus } from "@/lib/feedPlacement";
+import { deriveLot, normalizeCalibration } from "@/lib/vision/lot";
 import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, fetchRaw, mainOutlineBounds, mergeOsm, tilesToLoad, toLatLon, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
@@ -85,7 +87,9 @@ function rankParking(osm, building, permit, occ) {
 
 // The card of a picked lot, pinned to the lot on the map (it follows the
 // view). Staff can add, open or remove the lot's live feed.
-function LotCard({ lot, engine, o, feed, staff, active, onAdd, onOpen, onRemove, onClose, onInside }) {
+function LotCard({ lot, engine, o, feed, staff, active, onAdd, onOpen, onRemove, onClose, onInside, onPlace }) {
+  const pl = feed?.placement || {};
+  const place = (patch) => onPlace(feed, { ...pl, ...patch });
   const ref = useRef(null);
   useEffect(() => {
     let raf;
@@ -114,10 +118,19 @@ function LotCard({ lot, engine, o, feed, staff, active, onAdd, onOpen, onRemove,
         </div>
       )}
       {!o && !staff && <p className="mt-1 text-[11px] text-green-100/60">No camera on this lot yet</p>}
+      {staff && feed?.reading?.spaces?.length > 0 && (
+        <div className="mt-2 rounded-lg bg-black/25 p-2 text-[11px] text-green-100/80">
+          <p className="mb-1">Line the spaces up with the lot:</p>
+          <div className="flex flex-wrap justify-center gap-1">
+            {[["Turn", { rot: ((pl.rot || 0) + 1) % 4 }], ["Flip", { flip: !pl.flip }], ["Smaller", { size: (pl.size || 1) / 1.1 }], ["Bigger", { size: (pl.size || 1) * 1.1 }],
+              ["↑", { dy: (pl.dy || 0) - 4 }], ["↓", { dy: (pl.dy || 0) + 4 }], ["←", { dx: (pl.dx || 0) - 4 }], ["→", { dx: (pl.dx || 0) + 4 }]].map(([t, patch]) => (
+              <button key={t} onClick={() => place(patch)} className="rounded bg-[#0b1f12] px-2 py-1 text-white ring-1 ring-white/10 hover:bg-black">{t}</button>
+            ))}
+          </div>
+        </div>
+      )}
       {feed?.reading?.spaces?.length > 0 && (
-        <button onClick={() => onInside(feed)} className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg bg-green-500 px-3 py-2 text-sm font-semibold text-neutral-950 hover:bg-green-400">
-          <Car className="h-4 w-4" /> See inside (live)
-        </button>
+        <button onClick={() => onInside(feed)} className="mt-2 w-full text-center text-[11px] text-green-200/80 underline hover:text-white">Open the full-screen guide</button>
       )}
       {staff && !feed && lot.id && (
         <button onClick={onAdd} className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#0b1f12] px-3 py-2 text-sm font-medium text-white ring-1 ring-white/10 hover:bg-black">
@@ -152,7 +165,7 @@ const ago = (t) => { const s = Math.max(0, Math.round((Date.now() - t) / 1000));
 let visitOsm = null;
 
 export default function CampusView({ mode = "user", feeds = [], activeFeedId = null, onAddFeed, onOpenFeed, onRemoveFeed,
-  feedSetup = null, setupSpaces = 0, onSaveFeed, onCancelFeed, cameraSlot = null, showInside = null }) {
+  feedSetup = null, setupSpaces = 0, onSaveFeed, onCancelFeed, cameraSlot = null, showInside = null, onPlaceFeed }) {
   const staff = mode === "staff";
   const canvasRef = useRef(null);
   const engine = useRef(null);
@@ -263,8 +276,8 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
     };
     if (engine.current) engine.current.onViewChange = onView;
   }, []);
-  useEffect(() => { engine.current?.setTrip(trip, { fly: trip?.fly !== false }); }, [trip]);
-  useEffect(() => { if (engine.current) engine.current.onPickTrip = (o) => setTrip((t) => (t ? { ...t, chosen: o, fly: false } : t)); }, []);
+
+  useEffect(() => { if (engine.current) engine.current.onPickTrip = (o) => setTrip((t) => (t ? { ...t, chosen: t.options.find((x) => x.lot.id === o.lot.id) || o, fly: false } : t)); }, []);
   // Changing the permit switch re-ranks the current trip.
   useEffect(() => {
     try { localStorage.setItem("smartpark.permit", permit ? "1" : "0"); } catch { /* blocked */ }
@@ -303,8 +316,67 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
   // Inside a live lot: its own 3D guide (by feed id, so it follows new readings).
   const [insideId, setInsideId] = useState(null);
   const insideFeed = placeFeeds.find((f) => f.id === insideId) || null;
-  // A feed just saved: open its lot's guide (what drivers will see).
-  useEffect(() => { if (showInside?.id) setInsideId(showInside.id); }, [showInside?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A feed just saved: show its lot on the map, space by space.
+  useEffect(() => {
+    const f = feeds.find((x) => x.id === showInside?.id);
+    const lot = f && osm?.parking.find((p) => p.id === f.lotId);
+    if (lot) { engine.current?.flyToLot(lot); setPicked(lot); }
+  }, [showInside?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Live lots on the campus map, space by space (the camera's lot map placed
+  // in the lot's outline; staff can turn, flip, move and resize it).
+  const plans = useRef(new Map());
+  const liveLots = useMemo(() => {
+    if (!osm) return [];
+    const out = [];
+    for (const f of placeFeeds) {
+      const lot = osm.parking.find((p) => p.id === f.lotId);
+      if (!lot || !f.calibration || !f.reading?.spaces?.length) continue;
+      let plan = plans.current.get(f.id);
+      if (!plan || plan.cal !== f.calibration) { plan = { cal: f.calibration, lot: deriveLot(normalizeCalibration(f.calibration)) }; plans.current.set(f.id, plan); }
+      const stalls = plan.lot.stalls;
+      if (!stalls.length) continue;
+      const pl = placementFor(stalls, lot.outer, f.placement || {});
+      const stale = feedOcc.get(f.lotId)?.stale;
+      const statuses = feedStatuses(f);
+      out.push({
+        lotId: f.lotId, feedId: f.id,
+        spaces: stalls.map((st) => ({
+          id: st.id, label: st.label, kind: st.kind,
+          poly: st.poly.map((p) => toCampus(p, pl)), front: toCampus(st.front, pl), back: toCampus(st.back, pl),
+          status: stale ? "unknown" : statuses.get(st.id)?.status || "unknown",
+        })),
+      });
+    }
+    return out;
+  }, [osm, placeFeeds, feedOcc]);
+
+  // The trip into a live lot: the free space closest to the building, and
+  // the walk from that space.
+  const shownTrip = useMemo(() => {
+    if (!trip?.chosen) return trip ? { ...trip, target: null } : trip;
+    const ll = liveLots.find((l) => l.lotId === trip.chosen.lot.id);
+    if (!ll) return { ...trip, target: null };
+    let best = null;
+    for (const sp of ll.spaces) {
+      if (sp.status !== "free" || sp.kind === "accessible" || sp.kind === "reserved") continue;
+      const c = sp.poly.reduce((a, p) => ({ x: a.x + p.x / sp.poly.length, y: a.y + p.y / sp.poly.length }), { x: 0, y: 0 });
+      const g = pointToPolygon(c, trip.building.outer);
+      if (!best || g.d < best.d) best = { sp, c, ...g };
+    }
+    if (!best) return { ...trip, target: null, full: true };
+    const walkMeters = Math.round(best.d * 1.3);
+    const chosen = { ...trip.chosen, from: best.c, to: best.at, distance: Math.round(best.d), walkMeters, walkMinutes: Math.max(1, Math.round(walkMeters / 1.3 / 60)), space: best.sp.label };
+    return { ...trip, chosen, options: trip.options.map((o) => (o === trip.chosen ? chosen : o)), target: { spaceId: best.sp.id, label: best.sp.label } };
+  }, [trip, liveLots]);
+  useEffect(() => { engine.current?.setTrip(shownTrip, { fly: shownTrip?.fly !== false }); }, [trip]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lastTarget = useRef("");
+  useEffect(() => {
+    engine.current?.setLiveLots(liveLots, { target: shownTrip?.target || null });
+    // Readings change: redraw the walk from the (possibly new) space, without flying.
+    const key = `${shownTrip?.target?.spaceId || ""}`;
+    if (shownTrip && key !== lastTarget.current) { lastTarget.current = key; engine.current?.setTrip({ ...shownTrip, fly: false }, { fly: false }); }
+  }, [liveLots, shownTrip]);
   useEffect(() => { engine.current?.setOccupancy(occ, { staff, feeds: feedByLot }); }, [occ, staff, feedByLot]);
   const occTotals = useMemo(() => {
     if (!occ) return null;
@@ -515,7 +587,7 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
             {trip?.chosen && feedByLot.get(trip.chosen.lot.id)?.reading?.spaces?.length > 0 && (
               <button onClick={() => setInsideId(feedByLot.get(trip.chosen.lot.id).id)}
                 className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-green-500 px-3 py-2.5 text-sm font-semibold text-neutral-950 hover:bg-green-400">
-                <Car className="h-4 w-4" /> Guide me to a free space in {trip.chosen.lot.name || "this lot"}
+                <Car className="h-4 w-4" /> Full-screen guide into {trip.chosen.lot.name || "this lot"}
               </button>
             )}
             {trip && (
@@ -526,10 +598,16 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
                     <input type="checkbox" checked={permit} onChange={(e) => setPermit(e.target.checked)} className="h-3.5 w-3.5 accent-amber-400" /> I have a parking permit
                   </label>
                 </div>
-                {trip.options.map((o, i) => (
-                  <button key={o.lot.id} onClick={() => setTrip({ ...trip, chosen: o, fly: true })}
-                    className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm ring-1 ${o === trip.chosen ? "bg-green-500/15 text-white ring-green-400/50" : "text-neutral-200 ring-white/5 hover:bg-white/5"}`}>
-                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${o === trip.chosen ? "bg-green-500 text-white" : "bg-white/10"}`}>{i + 1}</span>
+                {shownTrip?.target && (
+                  <p className="rounded-lg bg-green-500/15 px-2.5 py-2 text-sm text-green-50 ring-1 ring-green-400/40">
+                    Park in space <b className="text-green-300">{shownTrip.target.label}</b> in {trip.chosen.lot.name || "this lot"}: the free space closest to {trip.building.name} ({shownTrip.chosen.walkMinutes} min walk). The camera shows it free now.
+                  </p>
+                )}
+                {shownTrip?.full && <p className="rounded-lg bg-red-500/10 px-2.5 py-2 text-xs text-red-100 ring-1 ring-red-400/30">{trip.chosen.lot.name || "This lot"} is full right now (live camera). Pick another lot below.</p>}
+                {(shownTrip?.options || trip.options).map((o, i) => (
+                  <button key={o.lot.id} onClick={() => setTrip({ ...trip, chosen: trip.options.find((x) => x.lot.id === o.lot.id) || o, fly: true })}
+                    className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm ring-1 ${o.lot.id === trip.chosen?.lot.id ? "bg-green-500/15 text-white ring-green-400/50" : "text-neutral-200 ring-white/5 hover:bg-white/5"}`}>
+                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${o.lot.id === trip.chosen?.lot.id ? "bg-green-500 text-white" : "bg-white/10"}`}>{i + 1}</span>
                     <span className="min-w-0 flex-1">
                       <span className={`block truncate font-medium ${o.allowed === false ? "text-neutral-400" : ""}`}>{o.lot.name || (/multi/.test(o.lot.kind) ? "Parking structure" : "Unnamed lot")}</span>
                       <span className="block text-[11px] text-neutral-400">
@@ -673,6 +751,7 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
         )}
         {picked && !picked.building && (
           <LotCard lot={picked} engine={engine} o={occ?.get(picked.id)} feed={feedByLot.get(picked.id)} staff={staff} active={feedByLot.get(picked.id)?.id === activeFeedId}
+            onPlace={(f, patch) => onPlaceFeed?.(f, patch)}
             onInside={(f) => { setInsideId(f.id); setPicked(null); }}
             onAdd={() => onAddFeed?.(osm, picked)} onOpen={(f) => onOpenFeed?.(f)} onRemove={(f) => onRemoveFeed?.(f)} onClose={() => setPicked(null)} />
         )}

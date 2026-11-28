@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { extrude, ribbon } from "./lotScene.js";
+import { CAR_SIZE, carParts, extrude, ribbon } from "./lotScene.js";
 import { LEVEL_COLOR, occupancyLevel } from "../occupancySim.js";
 import { toLocalBox } from "../osm.js";
 
@@ -104,7 +104,8 @@ export class CampusScene {
     this.root = new THREE.Group();
     this.labels = new THREE.Group();
     this.trip = new THREE.Group();
-    this.scene.add(this.root, this.labels, this.trip);
+    this.live = new THREE.Group(); // live lots: every space and the cars in them
+    this.scene.add(this.root, this.labels, this.trip, this.live);
     this.tripData = null;
     this.themeName = "dark";
     this.theme = THEMES.dark;
@@ -247,7 +248,9 @@ export class CampusScene {
     (trip.options || []).forEach((o, i) => {
       const isChosen = o === trip.chosen;
       const lot = o.lot;
-      const fill = isChosen || !this.occ ? flatGeo(lot, 1.2) : null;
+      // A live lot shows its own spaces: no cover over it.
+      const liveLot = this.liveData?.lots?.some((l) => l.lotId === lot.id);
+      const fill = !liveLot && (isChosen || !this.occ) ? flatGeo(lot, 1.2) : null;
       if (fill) {
         const m = new THREE.Mesh(fill, new THREE.MeshBasicMaterial({ color: isChosen ? 0x22c55e : 0x4ade80, transparent: true, opacity: isChosen ? 0.8 : 0.4, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -20, polygonOffsetUnits: -20 }));
         m.renderOrder = 20;
@@ -507,6 +510,8 @@ export class CampusScene {
     if (this.occ) this.paintOccupancy();
   }
 
+  rebuildLive() { if (this.liveData) this.setLiveLots(this.liveData.lots, { target: this.liveData.target }); }
+
   // Parking labels: name (and capacity), or with occupancy data the free
   // spaces, coloured green / amber / red. Named lots, plus unnamed ones big
   // enough to matter when there is data.
@@ -554,6 +559,89 @@ export class CampusScene {
     if (this.tripData) this.setTrip(this.tripData, { fly: false });
   }
 
+  /**
+   * Live lots, space by space, as the driver guide shows them: each space
+   * green (free), red (taken) or grey (not seen), cars in the taken ones,
+   * and the space a driver is sent to highlighted with its name.
+   * lots: [{ lotId, spaces: [{ id, label, poly, front, back, status }] }],
+   * target: { spaceId, label } or null.
+   */
+  setLiveLots(lots, { target = null } = {}) {
+    this.liveData = { lots, target };
+    for (const o of [...this.live.children]) {
+      this.live.remove(o);
+      o.traverse?.((c) => { if (c.geometry && !c.userData.shared) c.geometry.dispose(); const m = c.material; (Array.isArray(m) ? m : m ? [m] : []).forEach((x) => { x.map?.dispose?.(); x.dispose?.(); }); });
+    }
+    if (!lots?.length) return;
+    const COLORS = { free: new THREE.Color(0x22c55e), occupied: new THREE.Color(0xdc2626), unknown: new THREE.Color(0x64748b) };
+    const fills = [], lines = [], cars = [];
+    let targetSpace = null;
+    for (const lot of lots) {
+      for (const sp of lot.spaces) {
+        const geo = flatGeo({ outer: sp.poly }, 0.3);
+        if (geo) {
+          const col = COLORS[sp.status] || COLORS.unknown;
+          const g = geo.index ? geo.toNonIndexed() : geo;
+          const n = g.getAttribute("position").count, arr = new Float32Array(n * 3);
+          for (let i = 0; i < n; i += 1) arr.set([col.r, col.g, col.b], i * 3);
+          g.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+          fills.push(g);
+        }
+        for (let i = 0; i < sp.poly.length; i += 1) {
+          const a = sp.poly[i], b = sp.poly[(i + 1) % sp.poly.length];
+          lines.push(new THREE.Vector3(a.x, 0.34, a.y), new THREE.Vector3(b.x, 0.34, b.y));
+        }
+        if (sp.status === "occupied") cars.push(sp);
+        if (target && sp.id === target.spaceId) targetSpace = sp;
+      }
+    }
+    if (fills.length) {
+      const mesh = new THREE.Mesh(mergeGeometries(fills), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -14, polygonOffsetUnits: -14 }));
+      mesh.renderOrder = 13;
+      this.live.add(mesh);
+    }
+    if (lines.length) this.live.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(lines), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })));
+    if (cars.length) {
+      // The same car as the driver guide, sized to the space, nose to its front.
+      const parts = carParts();
+      const PALETTE = [0xd4d7dc, 0x22252a, 0x8c929b, 0x2a4b7c, 0x8b1e24, 0xf1f1ef, 0x4b5320, 0x5a6470];
+      const body = new THREE.InstancedMesh(parts.body, new THREE.MeshLambertMaterial({ color: 0xffffff }), cars.length);
+      const dark = new THREE.InstancedMesh(parts.dark, new THREE.MeshLambertMaterial({ color: 0x15181c }), cars.length);
+      body.geometry.userData.shared = true; dark.geometry.userData.shared = true;
+      body.userData.shared = true; dark.userData.shared = true;
+      const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
+      cars.forEach((sp, i) => {
+        const c = sp.poly.reduce((acc, p) => ({ x: acc.x + p.x / sp.poly.length, y: acc.y + p.y / sp.poly.length }), { x: 0, y: 0 });
+        const len = Math.hypot(sp.back.x - sp.front.x, sp.back.y - sp.front.y);
+        const w = Math.hypot(sp.poly[1].x - sp.poly[0].x, sp.poly[1].y - sp.poly[0].y);
+        const k = Math.max(0.45, Math.min(1.1, Math.min(len / (CAR_SIZE.length + 0.6), w / (CAR_SIZE.width + 0.5))));
+        // Car nose (+x) towards the space's front (the aisle side).
+        q.setFromAxisAngle(up, -Math.atan2(sp.front.y - sp.back.y, sp.front.x - sp.back.x));
+        m4.compose(new THREE.Vector3(c.x, 0.32, c.y), q, new THREE.Vector3(k, k, k));
+        body.setMatrixAt(i, m4); dark.setMatrixAt(i, m4);
+        let h = 0;
+        for (const ch of String(sp.id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+        body.setColorAt(i, new THREE.Color(PALETTE[h % PALETTE.length]));
+      });
+      this.live.add(body, dark);
+    }
+    if (targetSpace) {
+      const geo = flatGeo({ outer: targetSpace.poly }, 0.5);
+      if (geo) {
+        const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x4ade80, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -24, polygonOffsetUnits: -24 }));
+        m.renderOrder = 26;
+        this.live.add(m);
+      }
+      const c = targetSpace.poly.reduce((acc, p) => ({ x: acc.x + p.x / targetSpace.poly.length, y: acc.y + p.y / targetSpace.poly.length }), { x: 0, y: 0 });
+      const label = mapLabel(target.label || targetSpace.label || "Your space", { bg: "#16a34a", fg: "#fff", weight: 800 });
+      label.sprite.position.set(c.x, 6, c.y);
+      label.sprite.scale.set(label.aspect * 0.03, 0.03, 1);
+      label.sprite.renderOrder = 31;
+      this.live.add(label.sprite);
+    }
+    radialFog(this.live);
+  }
+
   /** Where a lot is on screen (CSS pixels in the canvas), or null if not in view. */
   screenOf(lot) {
     if (!lot?.outer?.length) return null;
@@ -575,7 +663,8 @@ export class CampusScene {
         continue;
       }
       mesh.material.color.set(t.lot);
-      if (o) mesh.material.color.lerp(new THREE.Color(LEVEL_COLOR[occupancyLevel(o)]), this.themeName === "dark" ? 0.55 : 0.5);
+      // Live lots show every space instead: the lot itself stays neutral.
+      if (o && !o.live) mesh.material.color.lerp(new THREE.Color(LEVEL_COLOR[occupancyLevel(o)]), this.themeName === "dark" ? 0.55 : 0.5);
     }
     this.addLotLabels();
     radialFog(this.labels);

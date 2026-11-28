@@ -796,6 +796,9 @@ export function makeLabel(text, { bg = "#0f172a", fg = "#fff", bold = true, roun
 }
 
 // A clean sedan, centred, nose along +x: body (paint) and glass/tyres (dark).
+// Shared with the campus map (cars in live lots).
+export const carParts = () => carGeometries();
+export const CAR_SIZE = { length: 4.6, width: 1.85 };
 let carCache = null;
 function carGeometries() {
   if (carCache) return carCache;

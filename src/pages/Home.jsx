@@ -189,6 +189,8 @@ export default function Home() {
     // Show staff the lot as drivers will see it: its own guide screen.
     setShowInside({ id: f.id, nonce: Date.now() });
   }, [feedSetup, calibration, frame, setFeeds]);
+  // Staff line a live lot's spaces up with the lot on the campus map.
+  const placeFeed = useCallback((feed, placement) => setFeeds((prev) => prev.map((f) => (f.id === feed.id ? { ...f, placement } : f))), [setFeeds]);
   const removeFeed = useCallback((feed) => {
     if (!window.confirm(`Remove the live feed from ${feed.lotName || "this lot"}?`)) return;
     setFeeds((prev) => prev.filter((x) => x.id !== feed.id));
@@ -416,7 +418,7 @@ export default function Home() {
               onAddFeed={addFeed} onOpenFeed={openFeed} onRemoveFeed={removeFeed}
               feedSetup={feedSetup} setupSpaces={calibration.stalls.length} onSaveFeed={saveFeedSetup} onCancelFeed={() => setFeedSetup(null)}
               cameraSlot={<CameraSlot host={camHost} active={Boolean(feedSetup) && tab === "staff"} className="flex min-h-[640px] flex-col" />}
-              showInside={showInside} />
+              showInside={showInside} onPlaceFeed={placeFeed} />
           </Suspense>
         </main>
       )}
