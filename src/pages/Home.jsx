@@ -174,7 +174,7 @@ export default function Home() {
   const addFeed = useCallback((osm, lot) => {
     setFeedSetup({ ...newFeed(osm, lot), stage: "aerial" });
     setActiveFeedId(null);
-    resetCamera({ ...EMPTY_CALIBRATION, view: "overhead" });
+    resetCamera();
   }, []);
   const openFeed = useCallback(async (feed) => {
     setActiveFeedId(null);
@@ -187,13 +187,12 @@ export default function Home() {
     }
   }, []);
   // Step 1 done: keep the satellite picture and its spaces; on to the camera.
-  const aerialDone = useCallback(async () => {
+  const aerialDone = useCallback(async ({ blob, calibration: aerialCal }) => {
     const f = feedSetup;
-    const blob = await frameBlob();
     if (blob) await feedPictures.save(f.id, blob);
-    setFeedSetup({ ...f, stage: "camera", aerialCal: calibration });
+    setFeedSetup({ ...f, stage: "camera", aerialCal });
     resetCamera();
-  }, [feedSetup, calibration, frameBlob]);
+  }, [feedSetup]);
   const skipAerial = useCallback(() => { setFeedSetup((f) => ({ ...f, stage: "camera", aerialCal: null })); resetCamera(); }, []);
   // Step 2 done: with a satellite picture, match the camera to it; else save.
   const saveFeedSetup = useCallback(async () => {

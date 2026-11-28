@@ -3,6 +3,7 @@ import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock,
 import { feedOccupancy, feedStatuses, placeKey } from "@/lib/campusFeeds";
 import LiveLotView from "@/components/SmartPark/LiveLotView";
 import FeedGuide from "@/components/SmartPark/FeedGuide";
+import AerialDrop from "@/components/SmartPark/AerialDrop";
 import { placementFor, pointToPolygon, toCampus } from "@/lib/feedPlacement";
 import { deriveLot, normalizeCalibration } from "@/lib/vision/lot";
 import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, fetchRaw, mainOutlineBounds, mergeOsm, tilesToLoad, toLatLon, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
@@ -168,6 +169,7 @@ let visitOsm = null;
 export default function CampusView({ mode = "user", feeds = [], activeFeedId = null, onAddFeed, onOpenFeed, onRemoveFeed,
   feedSetup = null, setupSpaces = 0, onSaveFeed, onCancelFeed, cameraSlot = null, showInside = null, onPlaceFeed, onAerialDone, onSkipAerial }) {
   const staff = mode === "staff";
+  const [aerial, setAerial] = useState(null); // step 1 of a feed: { blob, calibration }
   const canvasRef = useRef(null);
   const engine = useRef(null);
   const fileRef = useRef(null);
@@ -767,10 +769,10 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
                 <div className="ml-auto flex items-center gap-2">
                   {feedSetup.stage === "aerial" ? (
                     <>
-                      <button onClick={onSkipAerial} className="rounded-md px-3 py-1.5 text-xs text-green-100 ring-1 ring-green-400/40 hover:bg-white/5">No satellite picture</button>
-                      <button onClick={onAerialDone} disabled={!setupSpaces}
-                        className="rounded-md bg-green-500 px-3 py-1.5 text-xs font-semibold text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40">
-                        Next: the lot&apos;s camera{setupSpaces ? ` (${setupSpaces} spaces)` : ""}
+                      <button onClick={onSkipAerial} className="rounded-md px-3 py-1.5 text-xs text-green-100 ring-1 ring-green-400/40 hover:bg-white/5">Skip</button>
+                      <button onClick={() => aerial && onAerialDone(aerial)} disabled={!aerial?.calibration.stalls.length}
+                        className="rounded-md bg-green-500 px-4 py-1.5 text-sm font-semibold text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40">
+                        Next
                       </button>
                     </>
                   ) : (
@@ -789,11 +791,11 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
               </div>
               <p className="mt-1.5 text-xs text-green-100/80">
                 {feedSetup.stage === "aerial"
-                  ? <>Load a <b>satellite or aerial picture of this lot</b> (Photo / video file; a screenshot from a map works). Mark its <b>Lot corners</b> (More tools) so it fills the lot exactly, then <b>Find spaces automatically</b> and mark the <b>Entrance</b>. This picture becomes the lot&apos;s 3D animation.</>
+                  ? <>Add a satellite image of the lot, then press <b>Next</b>. It becomes the lot&apos;s 3D animation.</>
                   : <>Now the <b>lot&apos;s camera</b>: Webcam, Phone camera, or a photo / video of it. Map its spaces (Find spaces automatically, or draw them).{feedSetup.aerialCal ? " Next you click 4 matching points on the camera and the satellite picture, so the camera's readings land on the right spaces." : ""}</>}
               </p>
             </section>
-            <div className="p-3">{cameraSlot}</div>
+            {feedSetup.stage === "aerial" ? <AerialDrop key={feedSetup.id} onReady={setAerial} /> : <div className="p-3">{cameraSlot}</div>}
           </div>
         )}
         {liveLots.map((l) => (
