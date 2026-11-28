@@ -1,3 +1,5 @@
+// Must run before anything reads the saved lot (see the file).
+import '@/lib/freshStart'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from '@/App.jsx'
