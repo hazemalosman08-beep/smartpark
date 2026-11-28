@@ -183,11 +183,11 @@ test("a single building as the place: its site area becomes the complex; only gr
   assert.equal(osm.green.length, 1, "the park is green; residential and religious land are not");
 });
 
-test("limitBounds: a single building gets at least 600 m around it", async () => {
+test("limitBounds: a single building (or a piece of road) gets at least 1.5 km around it", async () => {
   const { limitBounds } = await import("../../src/lib/osm.js");
   const { bounds, limited } = limitBounds({ minlat: 42.4986, maxlat: 42.4993, minlon: -83.4018, maxlon: -83.4006 });
   assert.equal(limited, false);
-  assert.ok(Math.abs((bounds.maxlat - bounds.minlat) * 111320 - 600) < 1);
+  assert.ok(Math.abs((bounds.maxlat - bounds.minlat) * 111320 - 1500) < 1);
 });
 
 test("closest parking: a visitor lot next door beats an open lot further away; permit opens on-site private lots", async () => {

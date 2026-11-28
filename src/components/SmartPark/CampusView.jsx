@@ -44,6 +44,13 @@ function TypePick({ label, options, value, onChange, placeholder, id }) {
 // A big place can be explored up to this size (around its own point);
 // more of it is loaded as the view moves.
 const MAX_EXPLORE_M = 12000;
+const AROUND_M = 8000;
+
+function around(b, m) {
+  const lat = (b.minlat + b.maxlat) / 2, lon = (b.minlon + b.maxlon) / 2;
+  const dLat = m / 2 / 111320, dLon = m / 2 / (111320 * Math.cos((lat * Math.PI) / 180));
+  return { minlat: lat - dLat, maxlat: lat + dLat, minlon: lon - dLon, maxlon: lon + dLon };
+}
 
 function clampBox(b, maxM, centre) {
   const lat = (b.minlat + b.maxlat) / 2;
@@ -352,7 +359,10 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
     try {
       const data = await fetchArea(bounds, { onStatus: setBusy, outlineOf: place.osm });
       if (!data.buildings.length && !data.parking.length && !data.roads.length) throw new Error("OpenStreetMap has no buildings or roads mapped here yet.");
-      keep({ ...data, name: place.name, detail: place.detail, limited, full: limited ? clampBox(place.bounds, MAX_EXPLORE_M, place.centre) : null });
+      // The area that can be explored by dragging: the whole place if it is
+      // big, else about 8 km around it (a bridge, a stadium and what is
+      // around them); more of it loads as the view moves.
+      keep({ ...data, name: place.name, detail: place.detail, limited, full: limited ? clampBox(place.bounds, MAX_EXPLORE_M, place.centre) : around(bounds, AROUND_M) });
     } catch (err) {
       setError(err?.message && !/fetch/i.test(err.message) ? err.message : "The map servers are busy right now. Try again in a minute.");
     }

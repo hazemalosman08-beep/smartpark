@@ -125,7 +125,7 @@ const US_STATES = {
 // Large places (a whole city) are cut to their middle: more would be too much
 // to download and draw. About 3 x 3 km.
 export const MAX_SPAN_M = 3000;
-export const MIN_SPAN_M = 600;
+export const MIN_SPAN_M = 1500;
 export function limitBounds(b, centre = null) {
   // The window's centre: the middle of the area, or for an area too big to
   // show, the place's own point (kept inside the area).
