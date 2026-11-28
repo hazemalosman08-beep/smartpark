@@ -277,10 +277,16 @@ export class CampusScene {
     }
     if (ordinary.length) {
       // Roofs and walls coloured per vertex, so all buildings are one mesh
-      // (one draw call) whatever their count.
+      // (one draw call) whatever their count. Buildings outside the
+      // complex's outline are faded towards the ground colour.
       const roof = new THREE.Color(t.roof), wall = new THREE.Color(t.wall);
-      const geo = mergeGeometries(ordinary.map((o) => paintGroups(o.geo, [roof, wall])));
-      this.root.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true })));
+      const ground = new THREE.Color(t.ground);
+      const fade = [roof.clone().lerp(ground, 0.55), wall.clone().lerp(ground, 0.55)];
+      const geo = mergeGeometries(ordinary.map((o) => paintGroups(o.geo, o.b.inComplex === false ? fade : [roof, wall])));
+      const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+      mesh.userData.buildings = true;
+      this.pickables.push(mesh);
+      this.root.add(mesh);
       this.root.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 35), new THREE.LineBasicMaterial({ color: t.edge, transparent: true, opacity: 0.35 })));
     }
     for (const { geo, b } of garages) {
@@ -314,6 +320,32 @@ export class CampusScene {
         m.compose(new THREE.Vector3(p.x, 3 + s * 0.7, p.y), new THREE.Quaternion(), new THREE.Vector3(s, s * 0.9, s)); crown.setMatrixAt(i, m);
       });
       this.root.add(trunk, crown);
+    }
+
+    // The complex's outline on the ground.
+    const rim = (osm.outline || []).map((o) => ribbon([...o.outer, o.outer[0]].map((p) => new THREE.Vector2(p.x, p.y)), 4, 0.3)).filter(Boolean);
+    if (rim.length) {
+      const mesh = new THREE.Mesh(mergeGeometries(rim.map((g) => { if (g.getAttribute("uv")) g.deleteAttribute("uv"); return g; })),
+        new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.85, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -12, polygonOffsetUnits: -12 }));
+      mesh.renderOrder = 12;
+      this.root.add(mesh);
+    }
+
+    // Names of the complex's buildings (parking labels win when they overlap).
+    const named = new Map();
+    for (const b of osm.buildings) {
+      if (!b.name || b.part || b.garage || b.inComplex === false) continue;
+      const area = Math.abs(areaOf(b.outer));
+      if (!named.has(b.name) || named.get(b.name).area < area) named.set(b.name, { b, area });
+    }
+    for (const { b, area } of named.values()) {
+      const c = centre(b.outer);
+      const label = makeLabel(b.name, { bg: this.themeName === "dark" ? "#1f2937" : "#ffffff", fg: this.themeName === "dark" ? "#e5e7eb" : "#1f2937" });
+      label.sprite.position.set(c.x, b.height + 4, c.y);
+      label.sprite.scale.set(label.aspect * 0.019, 0.019, 1);
+      label.sprite.userData.building = b;
+      label.sprite.userData.rank = -100000 + area;
+      this.labels.add(label.sprite);
     }
 
     // Labels: every parking lot and garage (P + name).
@@ -396,7 +428,16 @@ export class CampusScene {
     const hit = this.raycaster.intersectObjects([...this.trip.children.filter((c) => c.isSprite), ...this.pickables, ...this.labels.children], false)[0];
     if (hit?.object?.userData?.trip) { this.onPickTrip?.(hit.object.userData.trip); return; }
     const lot = hit?.object?.userData?.lot;
-    if (lot) { this.flyToLot(lot); this.onPick?.(lot); }
+    if (lot) { this.flyToLot(lot); this.onPick?.(lot); return; }
+    let building = hit?.object?.userData?.building;
+    if (!building && hit?.object?.userData?.buildings) {
+      // The merged mesh: the building under the hit point (the tallest if
+      // several stack there).
+      const pt = { x: hit.point.x, y: hit.point.z };
+      building = this.osm.buildings.filter((b) => !b.garage && insidePoly(pt, b.outer)).sort((a, b) => (a.part - b.part) || b.height - a.height)[0];
+      if (building?.part) building = this.osm.buildings.find((b) => !b.part && !b.garage && insidePoly(pt, b.outer)) || building;
+    }
+    if (building) this.onPick?.({ building });
   }
 }
 
@@ -414,6 +455,21 @@ function paintGroups(geo, colors) {
   g.clearGroups();
   if (g.getAttribute("uv")) g.deleteAttribute("uv");
   return g;
+}
+
+function areaOf(p) {
+  let a = 0;
+  for (let i = 0; i < p.length; i += 1) { const q = p[(i + 1) % p.length]; a += p[i].x * q.y - q.x * p[i].y; }
+  return a / 2;
+}
+
+function insidePoly(pt, poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i += 1) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y) + a.x) c = !c;
+  }
+  return c;
 }
 
 function centre(poly) {

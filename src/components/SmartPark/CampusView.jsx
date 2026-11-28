@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Building2, Car, Crosshair, FileUp, Footprints, Loader2, MapPin, Moon, Search, Sun, X } from "lucide-react";
-import { ATTRIBUTION, destinations, fetchArea, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
+import { ATTRIBUTION, buildingCounts, destinations, fetchArea, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { loadPhoto, savePhoto } from "@/lib/photoStore";
 
@@ -88,7 +88,7 @@ export default function CampusView() {
     const { bounds, limited } = limitBounds(place.bounds);
     setBusy(`Downloading ${place.name}…`);
     try {
-      const data = await fetchArea(bounds, { onStatus: setBusy });
+      const data = await fetchArea(bounds, { onStatus: setBusy, outlineOf: place.osm });
       if (!data.buildings.length && !data.parking.length && !data.roads.length) throw new Error("OpenStreetMap has no buildings or roads mapped here yet.");
       keep({ ...data, name: place.name, detail: place.detail, limited });
     } catch (err) {
@@ -124,11 +124,12 @@ export default function CampusView() {
       const pts = (data.elements || []).flatMap((el) => el.geometry || (el.lat ? [el] : []) || []).filter((g) => g && Number.isFinite(g.lat));
       if (!pts.length) throw new Error("No map data in this file");
       const bounds = { minlat: Math.min(...pts.map((g) => g.lat)), maxlat: Math.max(...pts.map((g) => g.lat)), minlon: Math.min(...pts.map((g) => g.lon)), maxlon: Math.max(...pts.map((g) => g.lon)) };
-      keep({ ...parseOsm(data, bounds), bounds, name: name || file.name.replace(/\.json$/i, ""), fetchedAt: new Date().toISOString() });
+      keep({ ...parseOsm(data, bounds, { outline: data.outline }), bounds, name: name || file.name.replace(/\.json$/i, ""), fetchedAt: new Date().toISOString() });
     } catch (err) { setError(err.message || "Could not read the file"); }
   };
 
   const summary = useMemo(() => (osm ? parkingSummary(osm) : null), [osm]);
+  const counts = useMemo(() => (osm ? buildingCounts(osm) : null), [osm]);
   const lots = useMemo(() => (osm ? osm.parking.filter((p) => !p.space).sort((a, b) => (!a.name - !b.name) || (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }) || (b.capacity || 0) - (a.capacity || 0)) : []), [osm]);
 
   return (
@@ -183,14 +184,19 @@ export default function CampusView() {
                 onChange={(e) => { setGoText(e.target.value); setGoOpen(true); }}
                 onFocus={() => setGoOpen(true)}
                 onKeyDown={(e) => { if (e.key === "Enter" && suggestions[0]) goTo(suggestions[0]); if (e.key === "Escape") setGoOpen(false); }}
-                placeholder={buildingsList.length ? `Building name (${buildingsList.length} on this map)` : "No named buildings on this map"}
+                placeholder={buildingsList.length ? "Building name or address" : "No named buildings on this map"}
                 className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-2.5 py-2 pr-8 text-sm text-white"
               />
               {goText && <button onClick={() => { setGoText(""); setTrip(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white" aria-label="Clear"><X className="h-4 w-4" /></button>}
               {goOpen && suggestions.length > 0 && goText !== trip?.building?.name && (
                 <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 shadow-xl">
                   {suggestions.map((d) => (
-                    <button key={d.id} onClick={() => goTo(d)} className="block w-full truncate px-2.5 py-1.5 text-left text-sm text-neutral-200 hover:bg-white/10">{d.name}</button>
+                    <button key={d.id} onClick={() => goTo(d)} className="block w-full px-2.5 py-1.5 text-left text-sm text-neutral-200 hover:bg-white/10">
+                      <span className="block truncate">{d.name}</span>
+                      {(d.byAddress || d.inComplex === false || (d.address && d.address !== d.name)) && (
+                        <span className="block truncate text-[11px] text-neutral-500">{[d.byAddress ? "Unnamed building" : d.address, d.inComplex === false ? `outside ${osm.name || "the complex"}` : ""].filter(Boolean).join(" · ")}</span>
+                      )}
+                    </button>
                   ))}
                 </div>
               )}
@@ -228,11 +234,16 @@ export default function CampusView() {
               <p className="mt-1 text-lg font-semibold text-white">{osm.name}</p>
               {osm.detail && <p className="text-xs text-neutral-400">{osm.detail}</p>}
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                <Stat icon={Building2} value={osm.buildings.filter((b) => !b.part).length} label="buildings" />
+                <Stat icon={Building2} value={counts.complex} label={counts.hasOutline ? `buildings (${counts.named} named)` : "buildings in view"} />
                 <Stat icon={Car} value={summary.lots} label={`lots${summary.garages ? ` (${summary.garages} garages)` : ""}`} />
                 <Stat value={summary.capacity ? summary.capacity.toLocaleString() : "—"} label={summary.capacity ? `spaces in ${summary.withCapacity} lots` : "capacity unknown"} />
               </div>
-              <p className="mt-3 text-xs text-neutral-500">Parking occupancy comes from the lot cameras (not connected yet).</p>
+              <p className="mt-3 text-xs text-neutral-500">
+                {counts.hasOutline
+                  ? `Buildings inside the site's outline (orange line). ${counts.around.toLocaleString()} more around it are shown lighter. `
+                  : "OpenStreetMap has no outline for this place, so every building in view is counted. "}
+                Parking occupancy comes from the lot cameras (not connected yet).
+              </p>
             </section>
             <section style={{ maxHeight: "max(240px, calc(100vh - 470px))" }} className="min-h-0 overflow-auto rounded-xl border border-neutral-800 bg-neutral-900/60 p-2">
               <p className="px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-neutral-500">Parking ({lots.length})</p>
@@ -272,7 +283,17 @@ export default function CampusView() {
             <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className="rounded-lg bg-black/55 p-2 text-neutral-200 ring-1 ring-white/10 backdrop-blur" title="Light / dark">{theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}</button>
           </div>
         )}
-        {picked && (
+        {picked?.building && (
+          <div className="absolute bottom-10 left-3 max-w-[80%] rounded-xl bg-black/70 px-4 py-3 text-sm text-white ring-1 ring-white/10 backdrop-blur">
+            <p className="font-semibold">{picked.building.name || picked.building.address || "Unnamed building"}</p>
+            <p className="text-xs text-neutral-300">
+              {[picked.building.name && picked.building.address, picked.building.inComplex === false ? `Outside ${osm?.name || "the complex"}` : "", !picked.building.name ? "No name on OpenStreetMap" : ""].filter(Boolean).join(" · ")}
+            </p>
+            <button onClick={() => goTo({ ...picked.building, name: picked.building.name || picked.building.address || "Selected building" })}
+              className="mt-2 flex items-center gap-1.5 rounded-md bg-green-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-green-500"><Car className="h-3.5 w-3.5" /> Park closest to here</button>
+          </div>
+        )}
+        {picked && !picked.building && (
           <div className="absolute bottom-10 left-3 rounded-xl bg-black/70 px-4 py-3 text-sm text-white ring-1 ring-white/10 backdrop-blur">
             <p className="font-semibold">{picked.name || "Parking"}</p>
             <p className="text-xs text-neutral-300">{/multi/.test(picked.kind) ? "Parking structure" : "Surface lot"}{picked.capacity ? ` · ${picked.capacity} spaces` : ""}{picked.fee === "yes" ? " · paid" : ""}{picked.access && picked.access !== "yes" ? ` · ${picked.access}` : ""}</p>

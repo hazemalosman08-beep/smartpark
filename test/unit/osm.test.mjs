@@ -122,3 +122,37 @@ test("race: a failure starts the next source at once; all failing gives the real
   assert.ok(Date.now() - t0 < 1000, "did not wait for the head start");
   await assert.rejects(race([{ run: async () => { throw new Error("busy (504)"); } }, { after: 10, run: async () => { throw new TypeError("Failed to fetch"); } }]), /busy \(504\)/);
 });
+
+test("complex outline: buildings inside count, the neighbourhood does not; points and addresses name buildings", async () => {
+  const { parseOsm, buildingCounts, destinations, searchDestinations } = await import("../../src/lib/osm.js");
+  const sq = (lat, lon, d = 0.0002) => [{ lat, lon }, { lat, lon: lon + d }, { lat: lat + d, lon: lon + d }, { lat: lat + d, lon }, { lat, lon }];
+  const data = { elements: [
+    { type: "way", id: 1, tags: { building: "university", name: "Old Main" }, geometry: sq(42.000, -83.000) },
+    { type: "way", id: 2, tags: { building: "yes" }, geometry: sq(42.001, -83.000) }, // named by a point inside
+    { type: "node", id: 9, lat: 42.0011, lon: -82.9999, tags: { amenity: "library", name: "Science Library" } },
+    { type: "way", id: 3, tags: { building: "yes", "addr:housenumber": "5050", "addr:street": "Cass Avenue" }, geometry: sq(42.002, -83.000) },
+    { type: "way", id: 4, tags: { building: "shed" }, geometry: sq(42.0025, -83.000, 0.00005) },
+    { type: "way", id: 5, tags: { building: "house", name: "Smith House" }, geometry: sq(42.010, -83.010) }, // outside
+    { type: "way", id: 6, tags: { building: "house" }, geometry: sq(42.011, -83.010) }, // outside
+  ] };
+  const outline = { type: "way", id: 100, tags: { amenity: "university", name: "Test U" }, geometry: sq(41.999, -83.001, 0.005) };
+  const bounds = { minlat: 41.99, maxlat: 42.02, minlon: -83.02, maxlon: -82.99 };
+  const osm = parseOsm(data, bounds, { outline });
+  assert.equal(osm.outline.length, 1);
+  assert.deepEqual(buildingCounts(osm), { complex: 3, named: 2, around: 2, hasOutline: true }, "the shed is not a building people go to");
+  const lib = osm.buildings.find((b) => b.id === "way/2");
+  assert.equal(lib.name, "Science Library");
+  assert.equal(lib.nameFrom, "place");
+  const list = destinations(osm);
+  assert.deepEqual(list.map((d) => d.name), ["Old Main", "Science Library", "Smith House", "5050 Cass Avenue"]);
+  assert.equal(list.find((d) => d.name === "5050 Cass Avenue").byAddress, true);
+  assert.equal(searchDestinations(list, "cass")[0].name, "5050 Cass Avenue");
+  // No outline (a point place): every building in view counts.
+  assert.deepEqual(buildingCounts(parseOsm(data, bounds)), { complex: 5, named: 3, around: 0, hasOutline: false });
+});
+
+test("photon results keep the OSM object (for the outline)", async () => {
+  const { photonToPlaces } = await import("../../src/lib/osm.js");
+  const places = photonToPlaces(JSON.parse(fs.readFileSync(new URL("../fixtures/photon-henry-ford.json", import.meta.url))));
+  assert.ok(places[0].osm && /^(way|relation|node)$/.test(places[0].osm.type) && places[0].osm.id > 0);
+});

@@ -57,7 +57,8 @@ export function photonToPlaces(geojson) {
       bounds = { minlat: lat - d, maxlat: lat + d, minlon: lon - dl, maxlon: lon + dl };
     }
     const kind = String(p.osm_value || p.type || "").replace(/_/g, " ");
-    out.push({ id, name, detail: fullAddress(p), kind, bounds, centre: { lat, lon }, area: Boolean(e) });
+    const type = { N: "node", W: "way", R: "relation" }[p.osm_type];
+    out.push({ id, name, detail: fullAddress(p), kind, bounds, centre: { lat, lon }, area: Boolean(e), osm: type && p.osm_id ? { type, id: p.osm_id } : null });
   }
   // Places with an outline (campuses, hospitals, buildings) before single
   // points (bus stops, bike stands); otherwise the search's own order.
@@ -196,7 +197,8 @@ async function cachePut(key, data) {
 }
 
 /** Everything needed for the 3D map inside the bounds (plus a margin, in metres). */
-export async function fetchArea(bounds, { margin = 120, signal, onStatus, fresh = false } = {}) {
+export async function fetchArea(bounds, { margin = 120, signal, onStatus, fresh = false, outlineOf = null } = {}) {
+  const outlineP = outlineOf ? fetchOutline(outlineOf, { signal, fresh }).catch(() => null) : Promise.resolve(null);
   const dLat = margin / 111320, dLon = margin / (111320 * Math.cos(((bounds.minlat + bounds.maxlat) / 2) * Math.PI / 180));
   const box = { minlat: bounds.minlat - dLat, minlon: bounds.minlon - dLon, maxlat: bounds.maxlat + dLat, maxlon: bounds.maxlon + dLon };
   const key = cacheKey(box);
@@ -214,6 +216,7 @@ export async function fetchArea(bounds, { margin = 120, signal, onStatus, fresh 
   way["landuse"~"^(grass|meadow|forest|recreation_ground|village_green|flowerbed)$"];
   way["natural"~"^(wood|scrub|grassland|water)$"]; way["water"]; way["waterway"];
   node["natural"="tree"];
+  node["name"]["amenity"]; node["name"]["building"]; node["name"]["office"]; node["name"]["healthcare"]; node["name"]["shop"]; node["name"]["tourism"];
   way["railway"~"^(rail|light_rail|tram|subway)$"];
 );
 out geom tags;`;
@@ -230,8 +233,32 @@ out geom tags;`;
   } else {
     onStatus?.("Opening the saved map…");
   }
+  const outline = await outlineP;
   onStatus?.("Building the 3D map…");
-  return { ...parseOsm(data, bounds), fetchedAt: new Date().toISOString(), bounds };
+  return { ...parseOsm(data, bounds, { outline }), fetchedAt: new Date().toISOString(), bounds };
+}
+
+/**
+ * The place's own outline (a campus or hospital area, as drawn on
+ * OpenStreetMap), as an Overpass-style element, or null for a point.
+ */
+export async function fetchOutline({ type, id }, { signal, fresh = false } = {}) {
+  if (type !== "way" && type !== "relation") return null;
+  const key = `outline:${type}/${id}`;
+  const hit = fresh ? null : await cacheGet(key);
+  if (hit) return hit;
+  const res = await fetch(`${OSM_API.replace(/\/map$/, "")}/${type}/${id}/full`, { signal });
+  if (!res.ok) return null;
+  const nodes = new Map(), ways = new Map(), rels = new Map();
+  osmXmlInto(await res.text(), nodes, ways, rels);
+  const target = (type === "way" ? ways : rels).get(String(id));
+  if (!target) return null;
+  if (type === "relation") target.tags = { ...target.tags, type: "multipolygon" }; // boundary, site, …: outer ways all the same
+  const one = new Map([[String(id), target]]);
+  const el = osmToElements(nodes, type === "way" ? one : ways, type === "way" ? new Map() : one).elements.find((e) => e.type === type && e.id === +id);
+  if (!el) return null;
+  cachePut(key, el);
+  return el;
 }
 
 /**
@@ -284,10 +311,10 @@ export function osmXmlInto(xml, nodes, ways, rels) {
 export function osmToElements(nodes, ways, rels) {
   const geom = (refs) => refs.map((r) => nodes.get(r)).filter(Boolean).map((n) => ({ lat: n.lat, lon: n.lon }));
   const elements = [];
-  for (const [id, n] of nodes) if (n.tags?.natural === "tree") elements.push({ type: "node", id: +id, lat: n.lat, lon: n.lon, tags: n.tags });
+  for (const [id, n] of nodes) if (n.tags?.natural === "tree" || isNamedPoint(n.tags)) elements.push({ type: "node", id: +id, lat: n.lat, lon: n.lon, tags: n.tags });
   for (const [id, w] of ways) if (Object.keys(w.tags).length) elements.push({ type: "way", id: +id, tags: w.tags, geometry: geom(w.refs) });
   for (const [id, r] of rels) {
-    if (r.tags.type !== "multipolygon") continue;
+    if (r.tags.type !== "multipolygon" && r.tags.type !== "boundary") continue;
     const members = r.members.filter((m) => m.type === "way" && ways.has(m.ref)).map((m) => ({ type: "way", role: m.role, geometry: geom(ways.get(m.ref).refs) }));
     elements.push({ type: "relation", id: +id, tags: r.tags, members });
   }
@@ -298,11 +325,12 @@ export function osmToElements(nodes, ways, rels) {
  * Overpass JSON -> features in local metres (x east, y south, origin at the
  * centre of the bounds). Pure: tested without the network.
  */
-export function parseOsm(data, bounds) {
+export function parseOsm(data, bounds, { outline = null } = {}) {
   const lat0 = (bounds.minlat + bounds.maxlat) / 2, lon0 = (bounds.minlon + bounds.maxlon) / 2;
   const kx = 111320 * Math.cos((lat0 * Math.PI) / 180), ky = 110540;
   const P = (g) => ({ x: Math.round((g.lon - lon0) * kx * 10) / 10, y: Math.round(-(g.lat - lat0) * ky * 10) / 10 });
-  const out = { buildings: [], parking: [], roads: [], paths: [], green: [], water: [], trees: [], rails: [] };
+  const out = { buildings: [], parking: [], roads: [], paths: [], green: [], water: [], trees: [], rails: [], outline: [] };
+  const points = [];
   const ring = (geometry) => (geometry || []).filter(Boolean).map(P);
   const closed = (r) => r.length >= 4 && Math.hypot(r[0].x - r[r.length - 1].x, r[0].y - r[r.length - 1].y) < 0.5;
   const polygons = (e) => {
@@ -317,6 +345,7 @@ export function parseOsm(data, bounds) {
   for (const e of data.elements || []) {
     const t = e.tags || {};
     if (e.type === "node" && t.natural === "tree") { out.trees.push(P(e)); continue; }
+    if (e.type === "node") { if (isNamedPoint(t)) points.push({ ...P(e), name: t.name }); continue; }
     if (t.building || t["building:part"]) {
       if (t.building === "roof" && !t.height) continue;
       const levels = parseFloat(t["building:levels"]);
@@ -324,7 +353,8 @@ export function parseOsm(data, bounds) {
       const minH = parseFloat(String(t.min_height || "").replace(/[^\d.]/g, "")) || (parseFloat(t["building:min_level"]) * 3.2) || 0;
       const height = Number.isFinite(h) && h > 0 ? h : Number.isFinite(levels) && levels > 0 ? levels * 3.2 + 1 : null;
       const garage = t.building === "parking" || t.parking === "multi-storey";
-      for (const poly of polygons(e)) out.buildings.push({ ...poly, height, estimated: height === null, minHeight: minH, name: t.name || "", garage, part: Boolean(t["building:part"]), id: `${e.type}/${e.id}` });
+      const name = t.name || t.official_name || t.alt_name || t.short_name || t["addr:housename"] || "";
+      for (const poly of polygons(e)) out.buildings.push({ ...poly, height, estimated: height === null, minHeight: minH, name, nameFrom: name ? "name" : "", address: streetAddress(t), type: t.building || "part", garage, part: Boolean(t["building:part"]), id: `${e.type}/${e.id}` });
       if (!garage) continue;
     }
     if (t.amenity === "parking" || t.amenity === "parking_space") {
@@ -355,11 +385,50 @@ export function parseOsm(data, bounds) {
       for (const poly of polygons(e)) out.green.push({ ...poly, kind });
     }
   }
+  // The complex's own outline: buildings inside it belong to the complex,
+  // the rest is the neighbourhood around it. No outline: everything counts.
+  if (outline) out.outline = polygons(outline).filter((p) => p.outer.length >= 3);
+  const inOutline = (pt) => out.outline.some((o) => inside(pt, o.outer) && !o.holes.some((h) => inside(pt, h)));
+  for (const b of out.buildings) b.inComplex = !out.outline.length || inOutline(centre(b.outer));
+  // Unnamed buildings: a named place inside them (a shop, an office, a
+  // department mapped as a point) names them.
+  for (const pt of points) {
+    const b = out.buildings.find((x) => !x.name && !x.part && inside(pt, x.outer));
+    if (b) { b.name = pt.name; b.nameFrom = "place"; }
+  }
   // Heights still unknown: the median of the known ones nearby, else 3 floors.
   const known = out.buildings.filter((b) => !b.estimated).map((b) => b.height).sort((a, b) => a - b);
   const typical = known.length >= 5 ? known[Math.floor(known.length / 2)] : 10.6;
   for (const b of out.buildings) if (b.height === null) b.height = b.garage ? 12 : typical;
   return out;
+}
+
+// Points worth naming a building after.
+function isNamedPoint(t) {
+  return Boolean(t?.name && (t.amenity || t.building || t.office || t.healthcare || t.shop || t.tourism) && t.amenity !== "parking" && t.amenity !== "bicycle_parking");
+}
+
+function streetAddress(t) {
+  return [t["addr:housenumber"], t["addr:street"]].filter(Boolean).join(" ");
+}
+
+function centre(poly) {
+  return { x: poly.reduce((s, p) => s + p.x, 0) / poly.length, y: poly.reduce((s, p) => s + p.y, 0) / poly.length };
+}
+
+// Structures nobody walks to: not counted as buildings or offered as destinations.
+const MINOR = /^(shed|garage|garages|carport|roof|hut|kiosk|cabin|container|transformer_tower|toilets|service|bunker|tent|ruins|construction)$/;
+
+/** Buildings of the complex (inside its outline) and the ones around it. */
+export function buildingCounts(osm) {
+  const real = osm.buildings.filter((b) => !b.part && !b.garage && !MINOR.test(b.type || ""));
+  const mine = real.filter((b) => b.inComplex !== false);
+  return {
+    complex: mine.length,
+    named: mine.filter((b) => b.name).length,
+    around: real.length - mine.length,
+    hasOutline: Boolean(osm.outline?.length),
+  };
 }
 
 function roadWidth(t) {
@@ -414,16 +483,25 @@ export function parkingSummary(osm) {
 // ---------------------------------------------------------------------------
 // "Where are you going?": named buildings, and the parking closest to one.
 
-/** Named buildings (one entry per name; parts and garages left out), A-Z. */
+/**
+ * Buildings people can go to, A-Z: named ones, and unnamed ones with a
+ * street address (listed by the address). Parts, garages and sheds are left
+ * out; the complex's own buildings come first in searches.
+ */
 export function destinations(osm) {
   const seen = new Map();
   for (const b of osm.buildings) {
-    if (!b.name || b.part || b.garage) continue;
-    const key = b.name.trim().toLowerCase();
+    if (b.part || b.garage || MINOR.test(b.type || "")) continue;
+    const label = b.name || b.address;
+    if (!label) continue;
+    const key = label.trim().toLowerCase();
     const area = Math.abs(polyArea(b.outer));
-    if (!seen.has(key) || seen.get(key).area < area) seen.set(key, { ...b, area });
+    const prev = seen.get(key);
+    if (!prev || (b.inComplex !== false) > (prev.inComplex !== false) || ((b.inComplex !== false) === (prev.inComplex !== false) && prev.area < area)) {
+      seen.set(key, { ...b, name: label, byAddress: !b.name, area });
+    }
   }
-  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return [...seen.values()].sort((a, b) => (a.byAddress - b.byAddress) || a.name.localeCompare(b.name, undefined, { numeric: true }));
 }
 
 /** Search destinations by words in any order ("eng bldg" finds "Engineering Building"). */
@@ -431,9 +509,9 @@ export function searchDestinations(list, text, max = 8) {
   const words = String(text || "").toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return [];
   return list
-    .map((d) => { const n = d.name.toLowerCase(); return { d, ok: words.every((w) => n.includes(w)), starts: n.startsWith(words[0]) }; })
+    .map((d) => { const n = d.name.toLowerCase(), all = `${n} ${(d.address || "").toLowerCase()}`; return { d, ok: words.every((w) => all.includes(w)), starts: n.startsWith(words[0]) }; })
     .filter((x) => x.ok)
-    .sort((a, b) => (b.starts - a.starts) || a.d.name.length - b.d.name.length)
+    .sort((a, b) => ((b.d.inComplex !== false) - (a.d.inComplex !== false)) || (a.d.byAddress - b.d.byAddress) || (b.starts - a.starts) || a.d.name.length - b.d.name.length)
     .slice(0, max)
     .map((x) => x.d);
 }
