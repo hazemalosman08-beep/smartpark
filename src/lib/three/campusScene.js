@@ -289,7 +289,7 @@ export class CampusScene {
     lines(osm.roads.filter((r) => MAJOR.test(r.kind)), (r) => r.width, t.roadMajor, 0.095, 8);
 
     // Surface parking lots: flat, outlined, clickable.
-    const lots = osm.parking.filter((p) => !p.space && !/multi|underground|rooftop/.test(p.kind));
+    const lots = osm.parking.filter((p) => !p.space && (p.point || !/multi|underground|rooftop/.test(p.kind)));
     this.lotMesh = new Map();
     for (const lot of lots) {
       const mesh = flat([lot], t.lot, 0.12, 9);

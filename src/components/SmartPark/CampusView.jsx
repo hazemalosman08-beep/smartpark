@@ -1,9 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, MapPin, Moon, Search, Sun, X } from "lucide-react";
+import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock, MapPin, Moon, Search, Sun, X } from "lucide-react";
 import { ATTRIBUTION, buildingCounts, destinations, fetchArea, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
 import { STATES, stateByCode } from "@/lib/usStates";
+
+// Farther than this (about 10 minutes on foot) is not a real recommendation.
+const FAR_WALK_M = 800;
+
+function StepDot({ n, active = false, done = false }) {
+  return <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${done ? "bg-sky-500/30 text-sky-100" : active ? "bg-amber-400 text-neutral-900" : "bg-neutral-700 text-neutral-300"}`}>{n}</span>;
+}
 
 // Closest parking; with occupancy data, full lots go to the end.
 function rankParking(osm, building, permit, occ) {
@@ -181,6 +188,7 @@ export default function CampusView() {
   return (
     <div className="flex flex-1 flex-col gap-3 p-3 lg:flex-row lg:items-start lg:p-4">
       <aside className="flex min-h-0 flex-col gap-3 lg:w-[330px] lg:shrink-0">
+        <p className="-mb-1 flex items-center gap-2 px-1 text-xs font-semibold text-sky-200"><StepDot n={1} active={!osm} done={Boolean(osm)} /> Find the place</p>
         <form onSubmit={search} className="relative">
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
           <input
@@ -229,9 +237,16 @@ export default function CampusView() {
         {busy && <p className="flex items-center gap-2 text-sm text-sky-200"><Loader2 className="h-4 w-4 animate-spin" /> {busy}</p>}
         {error && <p className="rounded-md bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>}
         {osm?.limited && <p className="text-[11px] text-amber-200/80">This place is large: the middle 3 × 3 km are shown.</p>}
-        {osm && (
+        {(!osm || busy) && (
+          <section aria-disabled="true" className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-3 opacity-70">
+            <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-neutral-400"><StepDot n={2} /> Where are you going? <Lock className="ml-auto h-3.5 w-3.5" /></p>
+            <input disabled placeholder={busy ? "Loading the place…" : "Find the place first (step 1)"} aria-label="Where are you going (find the place first)"
+              className="w-full cursor-not-allowed rounded-md border border-neutral-800 bg-neutral-900 px-2.5 py-2 text-sm text-neutral-500 placeholder:text-neutral-500" />
+          </section>
+        )}
+        {osm && !busy && (
           <section className="rounded-xl border border-amber-500/30 bg-amber-500/[0.06] p-3">
-            <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-amber-100"><MapPin className="h-4 w-4 text-amber-300" /> Where are you going?</p>
+            <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-100"><StepDot n={2} active /> Where are you going?</p>
             <div className="relative">
               <input
                 value={goText}
@@ -255,6 +270,12 @@ export default function CampusView() {
                 </div>
               )}
             </div>
+            {trip && !trip.options.some((o) => o.allowed !== false && o.walkMeters <= FAR_WALK_M) && (
+              <p className="mt-3 rounded-lg bg-amber-500/10 px-2.5 py-2 text-xs text-amber-100 ring-1 ring-amber-400/30">
+                <b>No mapped parking lot within a 10-minute walk</b> of {trip.building.name}.
+                {trip.options[0] ? ` The closest mapped lot is ${trip.options[0].walkMeters >= 1000 ? `${(trip.options[0].walkMeters / 1000).toFixed(1)} km` : `${trip.options[0].walkMeters} m`} away.` : ""} OpenStreetMap has few lots mapped here; street parking near the building is not in the data.
+              </p>
+            )}
             {trip && (
               <div className="mt-3 space-y-1.5">
                 <div className="flex items-center justify-between">
@@ -270,7 +291,7 @@ export default function CampusView() {
                     <span className="min-w-0 flex-1">
                       <span className={`block truncate font-medium ${o.allowed === false ? "text-neutral-400" : ""}`}>{o.lot.name || (/multi/.test(o.lot.kind) ? "Parking structure" : "Unnamed lot")}</span>
                       <span className="block text-[11px] text-neutral-400">
-                        {/multi|underground/.test(o.lot.kind) ? "Garage" : "Surface lot"}{o.lot.capacity ? ` · ${o.lot.capacity} spaces` : ""}{o.private ? (o.allowed ? " · permit holders" : " · private") : o.permitOnly ? " · permit only" : o.customers ? " · visitors" : o.lot.access && !/^(yes|public)$/.test(o.lot.access) ? ` · ${o.lot.access}` : ""}{o.lot.fee === "yes" ? " · paid" : ""}
+                        {/multi|underground/.test(o.lot.kind) ? "Garage" : "Surface lot"}{o.lot.point ? " · mapped as a point" : ""}{o.lot.capacity ? ` · ${o.lot.capacity} spaces` : ""}{o.private ? (o.allowed ? " · permit holders" : " · private") : o.permitOnly ? " · permit only" : o.customers ? " · visitors" : o.lot.access && !/^(yes|public)$/.test(o.lot.access) ? ` · ${o.lot.access}` : ""}{o.lot.fee === "yes" ? " · paid" : ""}
                       </span>
                       {occ?.get(o.lot.id) && <FreeBadge o={occ.get(o.lot.id)} className="block text-xs" />}
                     </span>
@@ -378,7 +399,7 @@ export default function CampusView() {
         {picked && !picked.building && (
           <div className="absolute bottom-10 left-3 rounded-xl bg-black/70 px-4 py-3 text-sm text-white ring-1 ring-white/10 backdrop-blur">
             <p className="font-semibold">{picked.name || "Parking"}</p>
-            <p className="text-xs text-neutral-300">{/multi/.test(picked.kind) ? "Parking structure" : "Surface lot"}{picked.capacity ? ` · ${picked.capacity} spaces` : ""}{picked.fee === "yes" ? " · paid" : ""}{picked.access && picked.access !== "yes" ? ` · ${picked.access}` : ""}</p>
+            <p className="text-xs text-neutral-300">{/multi/.test(picked.kind) ? "Parking structure" : "Surface lot"}{picked.point ? " · location only (size approximate)" : ""}{picked.capacity ? ` · ${picked.capacity} spaces` : ""}{picked.fee === "yes" ? " · paid" : ""}{picked.access && picked.access !== "yes" ? ` · ${picked.access}` : ""}</p>
             {occ?.get(picked.id) ? (() => {
               const o = occ.get(picked.id);
               const used = 1 - o.free / o.total;

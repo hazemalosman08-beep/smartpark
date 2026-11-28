@@ -218,3 +218,20 @@ test("search within a state: the state's area is searched and other states' plac
     assert.equal(all.length, 2);
   } finally { globalThis.fetch = real; }
 });
+
+test("parking mapped as a point becomes a small lot of about its size", async () => {
+  const { parseOsm, nearestParking } = await import("../../src/lib/osm.js");
+  const data = { elements: [
+    { type: "node", id: 5, lat: 42.0, lon: -83.0, tags: { amenity: "parking", capacity: "40", name: "Front lot" } },
+    { type: "way", id: 6, tags: { building: "yes", name: "Clinic" }, geometry: [{ lat: 42.0005, lon: -83.0001 }, { lat: 42.0005, lon: -82.9999 }, { lat: 42.0007, lon: -82.9999 }, { lat: 42.0007, lon: -83.0001 }, { lat: 42.0005, lon: -83.0001 }] },
+  ] };
+  const osm = parseOsm(data, { minlat: 41.999, maxlat: 42.001, minlon: -83.001, maxlon: -82.999 });
+  assert.equal(osm.parking.length, 1);
+  const lot = osm.parking[0];
+  assert.ok(lot.point && lot.name === "Front lot" && lot.capacity === 40);
+  const side = lot.outer[1].x - lot.outer[0].x;
+  assert.ok(Math.abs(side - Math.sqrt(40 * 25)) < 0.5, `${side}`);
+  const near = nearestParking(osm, osm.buildings[0], 1)[0];
+  assert.equal(near.lot.name, "Front lot");
+  assert.ok(near.distance < 60);
+});

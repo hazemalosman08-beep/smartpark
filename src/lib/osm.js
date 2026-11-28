@@ -220,6 +220,7 @@ export async function fetchArea(bounds, { margin = 120, signal, onStatus, fresh 
   way["building:part"];
   way["amenity"="parking"]; relation["amenity"="parking"]["type"="multipolygon"];
   way["amenity"="parking_space"];
+  node["amenity"="parking"];
   way["highway"];
   way["leisure"~"^(park|garden|pitch|playground|track|sports_centre|stadium)$"];
   way["amenity"~"^(university|college|school|hospital|clinic|place_of_worship|community_centre|townhall|library|arts_centre|theatre)$"];
@@ -323,7 +324,7 @@ export function osmXmlInto(xml, nodes, ways, rels) {
 export function osmToElements(nodes, ways, rels) {
   const geom = (refs) => refs.map((r) => nodes.get(r)).filter(Boolean).map((n) => ({ lat: n.lat, lon: n.lon }));
   const elements = [];
-  for (const [id, n] of nodes) if (n.tags?.natural === "tree" || isNamedPoint(n.tags)) elements.push({ type: "node", id: +id, lat: n.lat, lon: n.lon, tags: n.tags });
+  for (const [id, n] of nodes) if (n.tags?.natural === "tree" || n.tags?.amenity === "parking" || isNamedPoint(n.tags)) elements.push({ type: "node", id: +id, lat: n.lat, lon: n.lon, tags: n.tags });
   for (const [id, w] of ways) if (Object.keys(w.tags).length) elements.push({ type: "way", id: +id, tags: w.tags, geometry: geom(w.refs) });
   for (const [id, r] of rels) {
     if (r.tags.type !== "multipolygon" && r.tags.type !== "boundary") continue;
@@ -362,6 +363,19 @@ export function parseOsm(data, bounds, { outline = null } = {}) {
       for (const poly of polygons(e)) sites.push({ ...poly, name: t.name || "", area: Math.abs(polyArea(poly.outer)) });
     }
     if (e.type === "node" && t.natural === "tree") { out.trees.push(P(e)); continue; }
+    if (e.type === "node" && t.amenity === "parking") {
+      // Parking mapped as a single point: a square of about its size
+      // (capacity x 25 m², else ~20 spaces) around it, marked approximate.
+      const c = P(e);
+      const half = Math.min(40, Math.max(10, Math.sqrt((parseInt(t.capacity, 10) || 20) * 25) / 2));
+      out.parking.push({
+        outer: [{ x: c.x - half, y: c.y - half }, { x: c.x + half, y: c.y - half }, { x: c.x + half, y: c.y + half }, { x: c.x - half, y: c.y + half }], holes: [],
+        id: `node/${e.id}`, name: t.name || t.ref || "", space: false, point: true,
+        kind: t.parking || "surface", capacity: parseInt(t.capacity, 10) || null,
+        access: t.access || "", fee: t.fee || "", levels: parseFloat(t["building:levels"] || t.levels) || null,
+      });
+      continue;
+    }
     if (e.type === "node") { if (isNamedPoint(t)) points.push({ ...P(e), name: t.name }); continue; }
     if (t.building || t["building:part"]) {
       if (t.building === "roof" && !t.height) continue;
