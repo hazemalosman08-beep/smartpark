@@ -1,11 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { feedOccupancy, newFeed, placeKey, readingFrom, READING_MAX_AGE_MS } from "../../src/lib/campusFeeds.js";
+import { feedOccupancy, feedStatuses, newFeed, placeKey, readingFrom, READING_MAX_AGE_MS } from "../../src/lib/campusFeeds.js";
 
 test("a feed's reading: free, occupied and unknown spaces of its mapped lot", () => {
   const cal = { stalls: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }] };
   const st = new Map([["a", { status: "occupied" }], ["b", { status: "free" }], ["c", { status: "unknown" }]]); // d: no reading yet
-  assert.deepEqual(readingFrom(cal, st, 5), { at: 5, total: 4, occupied: 1, unknown: 2, free: 1 });
+  const r = readingFrom(cal, st, 5);
+  assert.deepEqual({ ...r, spaces: undefined }, { at: 5, total: 4, occupied: 1, unknown: 2, free: 1, spaces: undefined });
+  assert.deepEqual(r.spaces, [["a", "o"], ["b", "f"], ["c", "u"], ["d", "u"]]);
+  const back = feedStatuses({ reading: r });
+  assert.equal(back.get("a").status, "occupied");
+  assert.equal(back.get("b").status, "free");
+  assert.equal(back.get("d").status, "unknown");
 });
 
 test("feeds become the lots' occupancy for their place only; old readings are stale", () => {

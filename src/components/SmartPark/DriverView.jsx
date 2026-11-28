@@ -25,7 +25,7 @@ const loadPref = (key, fallback) => { try { return localStorage.getItem(key) || 
 const savePref = (key, value) => { try { localStorage.setItem(key, value); } catch { /* storage blocked */ } };
 
 // The screen drivers see: a 3D guide (or the flat map) with the way to a space.
-export default function DriverView({ lot, graph, fromEntrance, statuses, tracks = [], source = "simulated", backdrop, scene, features, sceneRect }) {
+export default function DriverView({ lot, graph, fromEntrance, statuses, tracks = [], source = "simulated", backdrop, scene, features, sceneRect, embedded = false }) {
   const rootRef = useRef(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [clock, setClock] = useState(() => new Date());
@@ -79,7 +79,7 @@ export default function DriverView({ lot, graph, fromEntrance, statuses, tracks 
   const scale = lot.scaleSource === "measured" ? "" : " (estimated)";
 
   return (
-    <div ref={rootRef} className="flex h-full min-h-[calc(100vh-57px)] flex-col bg-[#070b0e] text-slate-100">
+    <div ref={rootRef} className={`flex h-full flex-col bg-[#070b0e] text-slate-100 ${embedded ? "" : "min-h-[calc(100vh-57px)]"}`}>
       {/* header strip */}
       <header className="flex flex-wrap items-center gap-3 border-b border-white/5 px-4 py-3 sm:px-5">
         <span className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-500 text-sm font-black text-emerald-950">P</span>

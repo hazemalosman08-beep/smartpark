@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock, MapPin, Moon, Plus, Search, ShieldCheck, Sun, Video, X } from "lucide-react";
 import { feedOccupancy, placeKey } from "@/lib/campusFeeds";
+import LiveLotView from "@/components/SmartPark/LiveLotView";
 import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, fetchRaw, mainOutlineBounds, mergeOsm, tilesToLoad, toLatLon, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
@@ -84,7 +85,7 @@ function rankParking(osm, building, permit, occ) {
 
 // The card of a picked lot, pinned to the lot on the map (it follows the
 // view). Staff can add, open or remove the lot's live feed.
-function LotCard({ lot, engine, o, feed, staff, active, onAdd, onOpen, onRemove, onClose }) {
+function LotCard({ lot, engine, o, feed, staff, active, onAdd, onOpen, onRemove, onClose, onInside }) {
   const ref = useRef(null);
   useEffect(() => {
     let raf;
@@ -113,6 +114,11 @@ function LotCard({ lot, engine, o, feed, staff, active, onAdd, onOpen, onRemove,
         </div>
       )}
       {!o && !staff && <p className="mt-1 text-[11px] text-green-100/60">No camera on this lot yet</p>}
+      {feed?.reading?.spaces?.length > 0 && (
+        <button onClick={() => onInside(feed)} className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg bg-green-500 px-3 py-2 text-sm font-semibold text-neutral-950 hover:bg-green-400">
+          <Car className="h-4 w-4" /> See inside (live)
+        </button>
+      )}
       {staff && !feed && lot.id && (
         <button onClick={onAdd} className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#0b1f12] px-3 py-2 text-sm font-medium text-white ring-1 ring-white/10 hover:bg-black">
           <Plus className="h-4 w-4" /> Add live feed
@@ -293,6 +299,9 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
   }, [simOcc, feedOcc]);
   occRef.current = occ;
   const feedByLot = useMemo(() => new Map(placeFeeds.map((f) => [f.lotId, f])), [placeFeeds]);
+  // Inside a live lot: its own 3D guide (by feed id, so it follows new readings).
+  const [insideId, setInsideId] = useState(null);
+  const insideFeed = placeFeeds.find((f) => f.id === insideId) || null;
   useEffect(() => { engine.current?.setOccupancy(occ, { staff, feeds: feedByLot }); }, [occ, staff, feedByLot]);
   const occTotals = useMemo(() => {
     if (!occ) return null;
@@ -500,6 +509,12 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
                 )}
               </div>
             )}
+            {trip?.chosen && feedByLot.get(trip.chosen.lot.id)?.reading?.spaces?.length > 0 && (
+              <button onClick={() => setInsideId(feedByLot.get(trip.chosen.lot.id).id)}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-green-500 px-3 py-2.5 text-sm font-semibold text-neutral-950 hover:bg-green-400">
+                <Car className="h-4 w-4" /> Guide me to a free space in {trip.chosen.lot.name || "this lot"}
+              </button>
+            )}
             {trip && (
               <div className="mt-3 space-y-1.5">
                 <div className="flex items-center justify-between">
@@ -655,8 +670,10 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
         )}
         {picked && !picked.building && (
           <LotCard lot={picked} engine={engine} o={occ?.get(picked.id)} feed={feedByLot.get(picked.id)} staff={staff} active={feedByLot.get(picked.id)?.id === activeFeedId}
+            onInside={(f) => { setInsideId(f.id); setPicked(null); }}
             onAdd={() => onAddFeed?.(osm, picked)} onOpen={(f) => onOpenFeed?.(f)} onRemove={(f) => onRemoveFeed?.(f)} onClose={() => setPicked(null)} />
         )}
+        {insideFeed && <LiveLotView feed={insideFeed} lotName={osm?.parking.find((p) => p.id === insideFeed.lotId)?.name || insideFeed.lotName} onBack={() => setInsideId(null)} />}
         <p className="absolute bottom-2 right-3 text-[11px] text-neutral-400">
           Map data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer" className="underline">{ATTRIBUTION}</a>
           <span className="ml-2 text-neutral-600" title="App version">v {typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"}</span>

@@ -46,7 +46,9 @@ export function readingFrom(calibration, statuses, at = Date.now()) {
     if (st === "occupied") occupied += 1;
     else if (st !== "free") unknown += 1;
   }
-  return { at, total: stalls.length, occupied, unknown, free: stalls.length - occupied - unknown };
+  // Each space's status too (o / f / u), for the lot's own 3D view.
+  const spaces = stalls.map((s) => [s.id, ({ occupied: "o", free: "f" })[statuses?.get(s.id)?.status] || "u"]);
+  return { at, total: stalls.length, occupied, unknown, free: stalls.length - occupied - unknown, spaces };
 }
 
 /**
@@ -61,4 +63,11 @@ export function feedOccupancy(feeds, key, now = Date.now()) {
     out.set(f.lotId, { free: f.reading.free, total: f.reading.total, unknownCount: f.reading.unknown, live: true, at: f.reading.at, stale, feedId: f.id });
   }
   return out;
+}
+
+/** A feed's per-space statuses as the lot views read them: Map id -> { status }. */
+export function feedStatuses(feed) {
+  const m = new Map();
+  for (const [id, c] of feed?.reading?.spaces || []) m.set(id, { status: c === "o" ? "occupied" : c === "f" ? "free" : "unknown", confidence: 1, vehicle_id: "" });
+  return m;
 }
