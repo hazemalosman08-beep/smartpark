@@ -23,23 +23,31 @@ export const OSM_API = "https://api.openstreetmap.org/api/0.6/map";
  * Suggestions while typing, like a map app: [{ id, name, detail, kind,
  * bounds, centre }]. near: { lat, lon } to prefer results close to it.
  */
-export async function searchPlaces(text, { signal, near = null, limit = 7, state = null } = {}) {
+export async function searchPlaces(text, { signal, near = null, limit = 7, state = null, country = null } = {}) {
   const q = String(text || "").trim();
   if (q.length < 2) return [];
   const url = new URL(PHOTON);
   url.searchParams.set("q", q);
-  // Within a state: search its area, ask for more (neighbours' places in
-  // the box are dropped), keep only addresses in the state.
-  url.searchParams.set("limit", String(state ? limit * 3 : limit));
+  // Within a country or state: search its area (or around its centre when
+  // it has no usable box), ask for more (places in neighbours are dropped),
+  // keep only places in it.
+  const within = Boolean(state || country);
+  url.searchParams.set("limit", String(within ? limit * 4 : limit));
   url.searchParams.set("lang", "en");
-  if (state?.bbox) {
-    const [w, sth, e, n] = state.bbox;
-    url.searchParams.set("bbox", [w - 0.3, sth - 0.3, e + 0.3, n + 0.3].map((v) => v.toFixed(2)).join(","));
+  const box = state?.bbox || country?.area?.bbox;
+  const pad = state ? 0.3 : 0.5;
+  if (box) {
+    const [w, sth, e, n] = box;
+    url.searchParams.set("bbox", [w - pad, sth - pad, e + pad, n + pad].map((v) => v.toFixed(2)).join(","));
+  } else if (country?.area?.centre) {
+    url.searchParams.set("lat", country.area.centre.lat.toFixed(3)); url.searchParams.set("lon", country.area.centre.lon.toFixed(3));
   } else if (near) { url.searchParams.set("lat", near.lat.toFixed(4)); url.searchParams.set("lon", near.lon.toFixed(4)); }
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`Place search is busy (${res.status}). Try again in a moment.`);
-  const places = photonToPlaces(await res.json());
-  return (state ? places.filter((p) => p.state === state.name) : places).slice(0, limit);
+  let places = photonToPlaces(await res.json());
+  if (country) places = places.filter((p) => p.countryCode === country.code);
+  if (state) places = places.filter((p) => p.state === state.name);
+  return places.slice(0, limit);
 }
 
 /** Photon GeoJSON -> places (pure: tested without the network). */
@@ -64,7 +72,7 @@ export function photonToPlaces(geojson) {
     }
     const kind = String(p.osm_value || p.type || "").replace(/_/g, " ");
     const type = { N: "node", W: "way", R: "relation" }[p.osm_type];
-    out.push({ id, name, detail: fullAddress(p), kind, bounds, centre: { lat, lon }, area: Boolean(e), osm: type && p.osm_id ? { type, id: p.osm_id } : null, state: p.state || "", country: p.country || "" });
+    out.push({ id, name, detail: fullAddress(p), kind, bounds, centre: { lat, lon }, area: Boolean(e), osm: type && p.osm_id ? { type, id: p.osm_id } : null, state: p.state || "", country: p.country || "", countryCode: String(p.countrycode || "").toUpperCase() });
   }
   // Places with an outline (campuses, hospitals, buildings) before single
   // points (bus stops, bike stands); otherwise the search's own order.

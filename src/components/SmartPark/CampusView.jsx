@@ -4,6 +4,41 @@ import { ATTRIBUTION, buildingCounts, destinations, fetchArea, limitBounds, near
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
 import { STATES, stateByCode } from "@/lib/usStates";
+import { COUNTRIES, countryArea, countryByCode, matchOption } from "@/lib/countries";
+
+const pref = (key, fallback = "") => { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } };
+const savePref = (key, value) => { try { localStorage.setItem(key, value); } catch { /* blocked */ } };
+
+// A box you can type in (with suggestions) or pick from: a country, a state.
+function TypePick({ label, options, value, onChange, placeholder, id }) {
+  const [text, setText] = useState(value?.name || "");
+  useEffect(() => { setText(value?.name || ""); }, [value?.code]); // eslint-disable-line react-hooks/exhaustive-deps
+  const commit = (t) => {
+    if (!t.trim()) { onChange(null); setText(""); return; }
+    const m = matchOption(options, t);
+    if (m) { onChange(m); setText(m.name); } else setText(value?.name || "");
+  };
+  return (
+    <label className="flex min-w-0 flex-1 flex-col gap-0.5 text-[10px] uppercase tracking-wider text-neutral-500">
+      {label}
+      <span className="relative">
+        <input
+          list={id} value={text} placeholder={placeholder} aria-label={label}
+          onChange={(e) => {
+            setText(e.target.value);
+            const m = options.find((o) => o.name.toLowerCase() === e.target.value.trim().toLowerCase());
+            if (m) onChange(m);
+          }}
+          onBlur={(e) => commit(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit(e.currentTarget.value); e.currentTarget.blur(); } }}
+          className="w-full rounded-md border border-neutral-700 bg-neutral-900 py-1.5 pl-2 pr-6 text-xs normal-case tracking-normal text-white placeholder:text-neutral-500 focus:border-sky-500 focus:outline-none"
+        />
+        {value && <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { onChange(null); setText(""); }} aria-label={`Clear ${label}`} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-white"><X className="h-3 w-3" /></button>}
+      </span>
+      <datalist id={id}>{options.map((o) => <option key={o.code} value={o.name} />)}</datalist>
+    </label>
+  );
+}
 
 // Farther than this (about 10 minutes on foot) is not a real recommendation.
 const FAR_WALK_M = 800;
@@ -52,8 +87,16 @@ export default function CampusView() {
   const [osm, setOsm] = useState(() => visitOsm);
   const placesFor = useRef(""); // the text (and state) the shown suggestions are for
   // Search only in one state (remembered on this device; "" = anywhere).
-  const [stateCode, setStateCode] = useState(() => { try { return localStorage.getItem("smartpark.state") || ""; } catch { return ""; } });
-  const searchState = stateByCode(stateCode);
+  // Where to search: a country first, then (United States) a state. Kept
+  // on this device. (An earlier version kept only a state: that means US.)
+  const [countryCode, setCountryCode] = useState(() => pref("smartpark.country", pref("smartpark.state") ? "US" : ""));
+  const [stateCode, setStateCode] = useState(() => pref("smartpark.state"));
+  const [area, setArea] = useState(null); // the country's search area
+  const country = countryByCode(countryCode);
+  const searchState = countryCode === "US" ? stateByCode(stateCode) : null;
+  const searchCountry = country ? { ...country, area: area?.code === countryCode ? area.area : null } : null;
+  const where = searchState ? searchState.name : country?.name || "";
+  const whereKey = `${countryCode}/${searchState?.code || ""}/${area?.code === countryCode ? 1 : 0}`;
   const [picked, setPicked] = useState(null);
   const [theme, setTheme] = useState("dark");
   // "Where are you going?"
@@ -127,16 +170,23 @@ export default function CampusView() {
       setPlacesBusy(true);
       try {
         const near = osm?.bounds ? { lat: (osm.bounds.minlat + osm.bounds.maxlat) / 2, lon: (osm.bounds.minlon + osm.bounds.maxlon) / 2 } : null;
-        const found = await searchPlaces(q, { signal: ctl.signal, near, state: searchState });
-        setPlaces(found); placesFor.current = `${q}|${stateCode}`; setActive(0); setPlacesOpen(true); setError("");
+        const found = await searchPlaces(q, { signal: ctl.signal, near, state: searchState, country: searchCountry });
+        setPlaces(found); placesFor.current = `${q}|${whereKey}`; setActive(0); setPlacesOpen(true); setError("");
       } catch (err) {
         if (err?.name !== "AbortError") setError(navigator.onLine === false ? "You are offline." : "Place search is not reachable right now. Try again in a moment.");
       }
       setPlacesBusy(false);
     }, 280);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [query, stateCode]);
-  useEffect(() => { try { localStorage.setItem("smartpark.state", stateCode); } catch { /* blocked */ } }, [stateCode]);
+  }, [query, whereKey]);
+  useEffect(() => { savePref("smartpark.country", countryCode); savePref("smartpark.state", countryCode === "US" ? stateCode : ""); }, [countryCode, stateCode]);
+  // The country's area for the search (looked up once per country).
+  useEffect(() => {
+    if (!country) return undefined;
+    const ctl = new AbortController();
+    countryArea(country, { signal: ctl.signal }).then((a) => { if (a) setArea({ code: country.code, area: a }); }).catch(() => {});
+    return () => ctl.abort();
+  }, [countryCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = async (place) => {
     setPlacesOpen(false); setError("");
@@ -158,11 +208,11 @@ export default function CampusView() {
     const q = query.trim();
     // Suggestions still for an earlier, shorter text (Enter pressed before
     // they caught up): search the whole text now instead.
-    if (placesFor.current !== `${q}|${stateCode}` && q.length >= 2) {
+    if (placesFor.current !== `${q}|${whereKey}` && q.length >= 2) {
       setPlacesBusy(true);
       try {
-        const found = await searchPlaces(q, { state: searchState });
-        placesFor.current = `${q}|${stateCode}`;
+        const found = await searchPlaces(q, { state: searchState, country: searchCountry });
+        placesFor.current = `${q}|${whereKey}`;
         setPlaces(found);
         if (found[0]) load(found[0]); else setError(`Nothing found for "${q}".`);
       } catch {
@@ -193,6 +243,14 @@ export default function CampusView() {
     <div className="flex flex-1 flex-col gap-3 p-3 lg:flex-row lg:items-start lg:p-4">
       <aside className="flex min-h-0 flex-col gap-3 lg:w-[330px] lg:shrink-0">
         <p className="-mb-1 flex items-center gap-2 px-1 text-xs font-semibold text-sky-200"><StepDot n={1} active={!osm} done={Boolean(osm)} /> Find the place</p>
+        <div className="flex gap-2 px-0.5">
+          <TypePick id="sp-countries" label="Country" placeholder="Any country" options={COUNTRIES} value={country}
+            onChange={(c) => { setCountryCode(c?.code || ""); if (c?.code !== "US") setStateCode(""); typed.current = true; }} />
+          {countryCode === "US" && (
+            <TypePick id="sp-states" label="State" placeholder="Any state" options={STATES} value={searchState}
+              onChange={(st) => { setStateCode(st?.code || ""); typed.current = true; }} />
+          )}
+        </div>
         <form onSubmit={search} className="relative">
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
           <input
@@ -205,7 +263,7 @@ export default function CampusView() {
               if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
               if (e.key === "Escape") setPlacesOpen(false);
             }}
-            placeholder={searchState ? `Search in ${searchState.name}…` : "Search a university, hospital, stadium, address…"}
+            placeholder={where ? `Search in ${where}…` : "Search a university, hospital, stadium, address…"}
             aria-label="Search a place"
             className="w-full rounded-full border border-neutral-700 bg-neutral-900 py-2.5 pl-8 pr-9 text-sm text-white shadow-sm focus:border-sky-500 focus:outline-none"
           />
@@ -227,17 +285,9 @@ export default function CampusView() {
             </div>
           )}
           {placesOpen && !placesBusy && query.trim().length >= 2 && places.length === 0 && typed.current && (
-            <div className="absolute z-30 mt-1 w-full rounded-xl border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-400">No places found{searchState ? ` in ${searchState.name}` : ""}</div>
+            <div className="absolute z-30 mt-1 w-full rounded-xl border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-400">No places found{where ? ` in ${where}` : ""}</div>
           )}
         </form>
-        <label className="-mt-1 flex items-center gap-2 px-1 text-xs text-neutral-400">
-          <MapPin className="h-3.5 w-3.5 shrink-0 text-sky-300" /> Search in
-          <select value={stateCode} onChange={(e) => { setStateCode(e.target.value); typed.current = true; }} aria-label="Search only in this state"
-            className="min-w-0 flex-1 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-white focus:border-sky-500 focus:outline-none">
-            <option value="">All states</option>
-            {STATES.map((st) => <option key={st.code} value={st.code}>{st.name}</option>)}
-          </select>
-        </label>
         {busy && <p className="flex items-center gap-2 text-sm text-sky-200"><Loader2 className="h-4 w-4 animate-spin" /> {busy}</p>}
         {error && <p className="rounded-md bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>}
         {osm?.limited && <p className="text-[11px] text-amber-200/80">This place is large: the middle 3 × 3 km are shown.</p>}

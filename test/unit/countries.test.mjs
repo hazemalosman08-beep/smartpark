@@ -1,0 +1,33 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { COUNTRIES, matchOption } from "../../src/lib/countries.js";
+import { STATES } from "../../src/lib/usStates.js";
+import { searchPlaces } from "../../src/lib/osm.js";
+
+test("typed country and state names: full name, code, or an unambiguous start", () => {
+  assert.equal(matchOption(COUNTRIES, "united states").code, "US");
+  assert.equal(matchOption(COUNTRIES, "sy").code, "SY", "code");
+  assert.equal(matchOption(COUNTRIES, "ger").code, "DE");
+  assert.equal(matchOption(COUNTRIES, "united"), null, "ambiguous: United Kingdom, United States, United Arab Emirates…");
+  assert.equal(matchOption(STATES, "MI").name, "Michigan");
+  assert.equal(matchOption(STATES, "mich").name, "Michigan");
+  assert.equal(matchOption(STATES, "new"), null);
+  assert.equal(matchOption(STATES, "new york").code, "NY");
+  assert.ok(COUNTRIES.length > 240 && COUNTRIES.find((c) => c.code === "SY").name === "Syria");
+});
+
+test("search within a country: its area, then only places in it", async () => {
+  const f = (name, cc, lon, lat) => ({ type: "Feature", properties: { osm_type: "W", osm_id: Math.round(Math.abs(lon * lat * 1000)), name, countrycode: cc, osm_value: "university" }, geometry: { type: "Point", coordinates: [lon, lat] } });
+  const real = globalThis.fetch;
+  let asked;
+  globalThis.fetch = async (url) => { asked = new URL(url); return { ok: true, json: async () => ({ features: [f("Hama University", "SY", 36.7, 35.1), f("Hama", "NO", 11.1, 61.0)] }) }; };
+  try {
+    const sy = await searchPlaces("hama", { country: { code: "SY", name: "Syria", area: { bbox: [35.47, 32.31, 42.37, 37.32], centre: { lat: 35, lon: 38 } } } });
+    assert.equal(asked.searchParams.get("bbox"), "34.97,31.81,42.87,37.82");
+    assert.deepEqual(sy.map((p) => p.name), ["Hama University"]);
+    // Across the date line (no box): searched around the centre.
+    await searchPlaces("hama", { country: { code: "US", name: "United States", area: { bbox: null, centre: { lat: 39.8, lon: -98.6 } } } });
+    assert.equal(asked.searchParams.get("bbox"), null);
+    assert.equal(asked.searchParams.get("lat"), "39.800");
+  } finally { globalThis.fetch = real; }
+});
