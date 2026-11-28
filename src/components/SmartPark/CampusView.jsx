@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Building2, Car, Crosshair, FileUp, Footprints, Loader2, MapPin, Moon, Search, Sun, X } from "lucide-react";
-import { ATTRIBUTION, destinations, fetchArea, findPlaces, nearestParking, parkingSummary, parseOsm, searchDestinations } from "@/lib/osm";
+import { ATTRIBUTION, destinations, fetchArea, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { loadPhoto, savePhoto } from "@/lib/photoStore";
 
@@ -11,7 +11,11 @@ export default function CampusView() {
   const engine = useRef(null);
   const fileRef = useRef(null);
   const [query, setQuery] = useState("Wayne State University");
-  const [places, setPlaces] = useState(null);
+  const [places, setPlaces] = useState([]); // suggestions while typing
+  const [placesOpen, setPlacesOpen] = useState(false);
+  const [placesBusy, setPlacesBusy] = useState(false);
+  const [active, setActive] = useState(0);
+  const typed = useRef(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [osm, setOsm] = useState(null);
@@ -56,25 +60,44 @@ export default function CampusView() {
 
   const keep = (data) => { setOsm(data); setPicked(null); savePhoto(new Blob([JSON.stringify(data)], { type: "application/json" }), "osm"); };
 
-  const search = async (e) => {
-    e?.preventDefault();
-    setError(""); setPlaces(null); setBusy("Searching OpenStreetMap…");
+  // Suggestions as you type (after a short pause, newest answer wins).
+  useEffect(() => {
+    if (!typed.current) return undefined;
+    const q = query.trim();
+    if (q.length < 2) { setPlaces([]); return undefined; }
+    const ctl = new AbortController();
+    const t = setTimeout(async () => {
+      setPlacesBusy(true);
+      try {
+        const near = osm?.bounds ? { lat: (osm.bounds.minlat + osm.bounds.maxlat) / 2, lon: (osm.bounds.minlon + osm.bounds.maxlon) / 2 } : null;
+        const found = await searchPlaces(q, { signal: ctl.signal, near });
+        setPlaces(found); setActive(0); setPlacesOpen(true); setError("");
+      } catch (err) {
+        if (err?.name !== "AbortError") setError(navigator.onLine === false ? "You are offline." : "Place search is not reachable right now. Try again in a moment.");
+      }
+      setPlacesBusy(false);
+    }, 280);
+    return () => { clearTimeout(t); ctl.abort(); };
+  }, [query]);
+
+  const load = async (place) => {
+    setPlacesOpen(false); setError("");
+    typed.current = false;
+    setQuery(place.name);
+    const { bounds, limited } = limitBounds(place.bounds);
+    setBusy(`Downloading ${place.name}…`);
     try {
-      const found = await findPlaces(query);
-      setPlaces(found);
-      if (!found.length) setError("Nothing found with that name. Try the full name, e.g. \"Wayne State University\".");
-      else if (found.length === 1) await load(found[0]);
-    } catch (err) { setError(err.message || "Could not reach OpenStreetMap"); }
+      const data = await fetchArea(bounds, { onStatus: setBusy });
+      if (!data.buildings.length && !data.parking.length && !data.roads.length) throw new Error("OpenStreetMap has no buildings or roads mapped here yet.");
+      keep({ ...data, name: place.name, detail: place.detail, limited });
+    } catch (err) {
+      setError(err?.message && !/fetch/i.test(err.message) ? err.message : "The map servers are busy right now. Try again in a minute.");
+    }
     setBusy("");
   };
-  const load = async (place) => {
-    setError(""); setBusy(`Downloading ${place.name}…`);
-    try {
-      const data = await fetchArea(place.bounds);
-      keep({ ...data, name: place.name });
-      setPlaces(null);
-    } catch (err) { setError(err.message || "Could not download the map"); }
-    setBusy("");
+  const search = (e) => {
+    e?.preventDefault();
+    if (places[active]) load(places[active]);
   };
   // An Overpass JSON file (e.g. exported from overpass-turbo.eu).
   const openFile = async (file, name = null) => {
@@ -94,23 +117,45 @@ export default function CampusView() {
   return (
     <div className="flex flex-1 flex-col gap-3 p-3 lg:flex-row lg:items-start lg:p-4">
       <aside className="flex min-h-0 flex-col gap-3 lg:w-[330px] lg:shrink-0">
-        <form onSubmit={search} className="flex gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="University, hospital, stadium…" className="w-full rounded-md border border-neutral-700 bg-neutral-900 py-2 pl-8 pr-2 text-sm text-white" />
-          </div>
-          <button disabled={Boolean(busy)} className="rounded-md bg-sky-500 px-3 text-sm font-semibold text-white disabled:opacity-50">Find</button>
+        <form onSubmit={search} className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
+          <input
+            value={query}
+            onChange={(e) => { typed.current = true; setQuery(e.target.value); }}
+            onFocus={() => places.length && setPlacesOpen(true)}
+            onBlur={() => setTimeout(() => setPlacesOpen(false), 150)}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(places.length - 1, a + 1)); setPlacesOpen(true); }
+              if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
+              if (e.key === "Escape") setPlacesOpen(false);
+            }}
+            placeholder="Search a university, hospital, stadium, address…"
+            aria-label="Search a place"
+            className="w-full rounded-full border border-neutral-700 bg-neutral-900 py-2.5 pl-8 pr-9 text-sm text-white shadow-sm focus:border-sky-500 focus:outline-none"
+          />
+          {placesBusy && <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-neutral-400" />}
+          {placesOpen && places.length > 0 && (
+            <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-xl border border-neutral-700 bg-neutral-900 shadow-2xl" role="listbox">
+              {places.map((p, i) => (
+                <button type="button" key={p.id} onMouseDown={(e) => e.preventDefault()} onClick={() => load(p)} onMouseEnter={() => setActive(i)}
+                  className={`flex w-full items-start gap-2.5 px-3 py-2 text-left ${i === active ? "bg-white/10" : ""}`}>
+                  <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm text-white">{p.name}</span>
+                    <span className="block truncate text-[11px] text-neutral-400">{[p.kind, p.detail].filter(Boolean).join(" · ")}</span>
+                  </span>
+                </button>
+              ))}
+              <p className="border-t border-neutral-800 px-3 py-1 text-[10px] text-neutral-500">Search by Photon · © OpenStreetMap contributors</p>
+            </div>
+          )}
+          {placesOpen && !placesBusy && query.trim().length >= 2 && places.length === 0 && typed.current && (
+            <div className="absolute z-30 mt-1 w-full rounded-xl border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-400">No places found</div>
+          )}
         </form>
         {busy && <p className="flex items-center gap-2 text-sm text-sky-200"><Loader2 className="h-4 w-4 animate-spin" /> {busy}</p>}
         {error && <p className="rounded-md bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>}
-        {places?.length > 1 && (
-          <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-2 text-sm">
-            <p className="mb-1 px-1 text-[11px] uppercase tracking-wider text-neutral-500">Which one?</p>
-            {places.slice(0, 8).map((p) => (
-              <button key={p.id} onClick={() => load(p)} className="block w-full rounded px-2 py-1.5 text-left text-neutral-200 hover:bg-white/5">{p.name} <span className="text-neutral-500">· {p.kind}</span></button>
-            ))}
-          </div>
-        )}
+        {osm?.limited && <p className="text-[11px] text-amber-200/80">This place is large: the middle 3 × 3 km are shown.</p>}
         {osm && (
           <section className="rounded-xl border border-amber-500/30 bg-amber-500/[0.06] p-3">
             <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-amber-100"><MapPin className="h-4 w-4 text-amber-300" /> Where are you going?</p>

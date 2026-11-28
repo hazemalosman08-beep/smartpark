@@ -2,43 +2,102 @@
 // buildings with heights, roads, paths, parking lots and garages, grass, trees
 // and water, in local metres, ready to animate in 3D.
 //
-// The data is fetched in the browser from the public Overpass API
-// (https://wiki.openstreetmap.org/wiki/Overpass_API): a place is found by name,
-// then everything inside its area (plus a margin) is read.
+// In the browser: places are suggested while typing (Photon, photon.komoot.io),
+// then everything inside the chosen place (plus a margin) is read from the
+// public Overpass API, with mirrors and openstreetmap.org as fall-backs.
 
-export const OVERPASS = "https://overpass-api.de/api/interpreter";
 export const ATTRIBUTION = "© OpenStreetMap contributors";
 
-async function overpass(query, signal) {
-  const res = await fetch(OVERPASS, { method: "POST", body: new URLSearchParams({ data: query }), signal });
-  if (!res.ok) throw new Error(`OpenStreetMap is busy (${res.status}). Try again in a minute.`);
-  return res.json();
+// Map data servers, tried in order (the public Overpass servers are often busy).
+export const OVERPASS_SERVERS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+];
+// Place search made for search-as-you-type, built on OpenStreetMap.
+export const PHOTON = "https://photon.komoot.io/api/";
+// OpenStreetMap's own server: the last resort for the map data.
+export const OSM_API = "https://api.openstreetmap.org/api/0.6/map";
+
+/**
+ * Suggestions while typing, like a map app: [{ id, name, detail, kind,
+ * bounds, centre }]. near: { lat, lon } to prefer results close to it.
+ */
+export async function searchPlaces(text, { signal, near = null, limit = 7 } = {}) {
+  const q = String(text || "").trim();
+  if (q.length < 2) return [];
+  const url = new URL(PHOTON);
+  url.searchParams.set("q", q);
+  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("lang", "en");
+  if (near) { url.searchParams.set("lat", near.lat.toFixed(4)); url.searchParams.set("lon", near.lon.toFixed(4)); }
+  const res = await fetch(url, { signal });
+  if (!res.ok) throw new Error(`Place search is busy (${res.status}). Try again in a moment.`);
+  return photonToPlaces(await res.json());
 }
 
-/** Places matching a name (campuses, hospitals, stadiums, malls, ...), with their bounds. */
-export async function findPlaces(name, signal) {
-  const safe = String(name).replace(/["\\]/g, "").trim();
-  if (!safe) return [];
-  const q = `[out:json][timeout:25];
-(
-  nwr["name"~"${safe}",i]["amenity"~"^(university|college|hospital|school)$"];
-  nwr["name"~"${safe}",i]["leisure"~"^(stadium|sports_centre|park)$"];
-  nwr["name"~"${safe}",i]["landuse"~"^(education|retail|commercial|institutional)$"];
-  nwr["name"~"${safe}",i]["shop"="mall"];
-);
-out tags bb 20;`;
-  const data = await overpass(q, signal);
-  return (data.elements || [])
-    .filter((e) => e.bounds)
-    .map((e) => ({ id: `${e.type}/${e.id}`, name: e.tags?.name || "", kind: e.tags?.amenity || e.tags?.leisure || e.tags?.landuse || e.tags?.shop || "", bounds: e.bounds }))
-    .sort((a, b) => area(b.bounds) - area(a.bounds));
+/** Photon GeoJSON -> places (pure: tested without the network). */
+export function photonToPlaces(geojson) {
+  const seen = new Set();
+  const out = [];
+  for (const f of geojson?.features || []) {
+    const p = f.properties || {};
+    const [lon, lat] = f.geometry?.coordinates || [];
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const name = p.name || [p.housenumber, p.street].filter(Boolean).join(" ") || p.city || "";
+    if (!name) continue;
+    const id = `${p.osm_type || "?"}${p.osm_id || `${lat},${lon}`}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    // Photon's extent is [west, north, east, south]; a point gets ~400 m around it.
+    const e = p.extent;
+    let bounds = e?.length === 4 ? { minlon: e[0], maxlat: e[1], maxlon: e[2], minlat: e[3] } : null;
+    if (!bounds) {
+      const d = 400 / 111320, dl = d / Math.cos((lat * Math.PI) / 180);
+      bounds = { minlat: lat - d, maxlat: lat + d, minlon: lon - dl, maxlon: lon + dl };
+    }
+    const where = [p.city || p.town || p.village || p.county, p.state, p.country].filter(Boolean);
+    const kind = String(p.osm_value || p.type || "").replace(/_/g, " ");
+    out.push({ id, name, detail: [...new Set(where)].join(", "), kind, bounds, centre: { lat, lon }, area: Boolean(e) });
+  }
+  // Places with an outline (campuses, hospitals, buildings) before single
+  // points (bus stops, bike stands); otherwise the search's own order.
+  return out.map((p, i) => ({ p, i })).sort((a, b) => (b.p.area - a.p.area) || a.i - b.i).map((x) => x.p);
 }
-const area = (b) => (b.maxlat - b.minlat) * (b.maxlon - b.minlon);
+
+// Large places (a whole city) are cut to their middle: more would be too much
+// to download and draw. About 3 x 3 km.
+export const MAX_SPAN_M = 3000;
+export function limitBounds(b) {
+  const lat = (b.minlat + b.maxlat) / 2, lon = (b.minlon + b.maxlon) / 2;
+  const kx = 111320 * Math.cos((lat * Math.PI) / 180), ky = 111320;
+  const halfW = Math.min((b.maxlon - b.minlon) * kx, MAX_SPAN_M) / 2 / kx;
+  const halfH = Math.min((b.maxlat - b.minlat) * ky, MAX_SPAN_M) / 2 / ky;
+  const limited = halfW * 2 * kx < (b.maxlon - b.minlon) * kx - 1 || halfH * 2 * ky < (b.maxlat - b.minlat) * ky - 1;
+  return { bounds: { minlat: lat - halfH, maxlat: lat + halfH, minlon: lon - halfW, maxlon: lon + halfW }, limited };
+}
+
+async function overpass(query, signal, onStatus) {
+  let last = null;
+  for (const server of OVERPASS_SERVERS) {
+    try {
+      onStatus?.(`Downloading map data (${new URL(server).host})…`);
+      const res = await fetch(server, { method: "POST", body: new URLSearchParams({ data: query }), signal });
+      if (res.ok) return await res.json();
+      last = new Error(`busy (${res.status})`);
+    } catch (err) {
+      if (err?.name === "AbortError") throw err;
+      last = err;
+    }
+  }
+  throw last || new Error("map servers unavailable");
+}
 
 /** Everything needed for the 3D map inside the bounds (plus a margin, in metres). */
-export async function fetchArea(bounds, { margin = 120, signal } = {}) {
+export async function fetchArea(bounds, { margin = 120, signal, onStatus } = {}) {
   const dLat = margin / 111320, dLon = margin / (111320 * Math.cos(((bounds.minlat + bounds.maxlat) / 2) * Math.PI / 180));
-  const bb = [bounds.minlat - dLat, bounds.minlon - dLon, bounds.maxlat + dLat, bounds.maxlon + dLon].map((v) => v.toFixed(6)).join(",");
+  const box = { minlat: bounds.minlat - dLat, minlon: bounds.minlon - dLon, maxlat: bounds.maxlat + dLat, maxlon: bounds.maxlon + dLon };
+  const bb = [box.minlat, box.minlon, box.maxlat, box.maxlon].map((v) => v.toFixed(6)).join(",");
   const q = `[out:json][timeout:90][bbox:${bb}];
 (
   way["building"]; relation["building"]["type"="multipolygon"];
@@ -53,8 +112,59 @@ export async function fetchArea(bounds, { margin = 120, signal } = {}) {
   way["railway"~"^(rail|light_rail|tram|subway)$"];
 );
 out geom tags;`;
-  const data = await overpass(q, signal);
+  let data;
+  try {
+    data = await overpass(q, signal, onStatus);
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
+    // Last resort: OpenStreetMap's own server, in small tiles.
+    data = await fetchFromOsmApi(box, { signal, onStatus });
+  }
   return { ...parseOsm(data, bounds), fetchedAt: new Date().toISOString(), bounds };
+}
+
+/**
+ * The same data from api.openstreetmap.org (OSM XML, at most 50 000 nodes per
+ * call): the area is read in tiles, one after another, and joined.
+ */
+export async function fetchFromOsmApi(box, { signal, onStatus, tile = 0.006 } = {}) {
+  const nodes = new Map(), ways = new Map(), rels = new Map();
+  const rows = Math.max(1, Math.ceil((box.maxlat - box.minlat) / tile));
+  const cols = Math.max(1, Math.ceil((box.maxlon - box.minlon) / (tile * 1.33)));
+  let n = 0;
+  for (let r = 0; r < rows; r += 1) for (let c = 0; c < cols; c += 1) {
+    n += 1;
+    onStatus?.(`Downloading map data from openstreetmap.org (${n}/${rows * cols})…`);
+    const la0 = box.minlat + ((box.maxlat - box.minlat) * r) / rows, la1 = box.minlat + ((box.maxlat - box.minlat) * (r + 1)) / rows;
+    const lo0 = box.minlon + ((box.maxlon - box.minlon) * c) / cols, lo1 = box.minlon + ((box.maxlon - box.minlon) * (c + 1)) / cols;
+    const res = await fetch(`${OSM_API}?bbox=${lo0.toFixed(6)},${la0.toFixed(6)},${lo1.toFixed(6)},${la1.toFixed(6)}`, { signal });
+    if (!res.ok) throw new Error(`OpenStreetMap is busy (${res.status}). Try again in a minute.`);
+    osmXmlInto(await res.text(), nodes, ways, rels);
+  }
+  return osmToElements(nodes, ways, rels);
+}
+
+/** OSM XML -> collections (browser: DOMParser). */
+export function osmXmlInto(xml, nodes, ways, rels) {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const tags = (el) => Object.fromEntries([...el.getElementsByTagName("tag")].map((t) => [t.getAttribute("k"), t.getAttribute("v")]));
+  for (const nd of doc.getElementsByTagName("node")) nodes.set(nd.getAttribute("id"), { lat: +nd.getAttribute("lat"), lon: +nd.getAttribute("lon"), tags: tags(nd) });
+  for (const w of doc.getElementsByTagName("way")) ways.set(w.getAttribute("id"), { refs: [...w.getElementsByTagName("nd")].map((x) => x.getAttribute("ref")), tags: tags(w) });
+  for (const r of doc.getElementsByTagName("relation")) rels.set(r.getAttribute("id"), { members: [...r.getElementsByTagName("member")].map((m) => ({ type: m.getAttribute("type"), ref: m.getAttribute("ref"), role: m.getAttribute("role") })), tags: tags(r) });
+}
+
+/** Collections -> Overpass-style elements with geometry (as parseOsm reads). */
+export function osmToElements(nodes, ways, rels) {
+  const geom = (refs) => refs.map((r) => nodes.get(r)).filter(Boolean).map((n) => ({ lat: n.lat, lon: n.lon }));
+  const elements = [];
+  for (const [id, n] of nodes) if (n.tags?.natural === "tree") elements.push({ type: "node", id: +id, lat: n.lat, lon: n.lon, tags: n.tags });
+  for (const [id, w] of ways) if (Object.keys(w.tags).length) elements.push({ type: "way", id: +id, tags: w.tags, geometry: geom(w.refs) });
+  for (const [id, r] of rels) {
+    if (r.tags.type !== "multipolygon") continue;
+    const members = r.members.filter((m) => m.type === "way" && ways.has(m.ref)).map((m) => ({ type: "way", role: m.role, geometry: geom(ways.get(m.ref).refs) }));
+    elements.push({ type: "relation", id: +id, tags: r.tags, members });
+  }
+  return { elements };
 }
 
 /**

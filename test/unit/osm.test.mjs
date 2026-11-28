@@ -68,3 +68,36 @@ test("closest parking: lots a visitor may use come first", () => {
   assert.equal(nearestParking(o2, lib, 2, { permit: false })[0].lot.id, "y", "no permit: the customers lot before the permit lot");
   assert.equal(nearestParking(o2, lib, 2, { permit: true })[0].lot.id, "x", "with a permit: the closest");
 });
+
+import { photonToPlaces, limitBounds, osmToElements } from "../../src/lib/osm.js";
+
+test("place search: suggestions with names, places, types and outlines", () => {
+  const json = JSON.parse(fs.readFileSync(new URL("../fixtures/photon-henry-ford.json", import.meta.url)));
+  const places = photonToPlaces(json);
+  assert.equal(places[0].name, "Henry Ford Hospital");
+  assert.match(places[0].detail, /Detroit, Michigan/);
+  assert.equal(places[0].kind, "hospital");
+  assert.ok(places[0].bounds.maxlat > places[0].bounds.minlat && places[0].bounds.maxlon > places[0].bounds.minlon);
+  assert.equal(places[places.length - 1].kind, "bicycle rental", "points without an outline come last");
+  assert.ok(places.at(-1).bounds.maxlat - places.at(-1).bounds.minlat > 0.005, "a point gets an area around it");
+});
+
+test("large places are cut to their middle 3 x 3 km", () => {
+  const city = { minlat: 42.2, maxlat: 42.5, minlon: -83.3, maxlon: -82.9 };
+  const { bounds, limited } = limitBounds(city);
+  assert.ok(limited);
+  assert.ok(Math.abs((bounds.maxlat - bounds.minlat) * 111320 - 3000) < 5);
+  assert.ok(Math.abs((bounds.minlat + bounds.maxlat) / 2 - 42.35) < 1e-9, "centred");
+  assert.equal(limitBounds({ minlat: 42.35, maxlat: 42.36, minlon: -83.07, maxlon: -83.06 }).limited, false);
+});
+
+test("openstreetmap.org data (fall-back) becomes the same elements", () => {
+  const nodes = new Map([["1", { lat: 42.0, lon: -83.0, tags: {} }], ["2", { lat: 42.0, lon: -82.999, tags: {} }], ["3", { lat: 42.001, lon: -82.999, tags: {} }], ["4", { lat: 42.0005, lon: -83.0005, tags: { natural: "tree" } }]]);
+  const ways = new Map([["10", { refs: ["1", "2", "3", "1"], tags: { building: "yes", "building:levels": "2" } }], ["11", { refs: ["1", "2"], tags: {} }]]);
+  const { elements } = osmToElements(nodes, ways, new Map());
+  assert.equal(elements.filter((e) => e.type === "way").length, 1, "untagged ways are only parts of others");
+  const bounds = { minlat: 41.999, maxlat: 42.002, minlon: -83.002, maxlon: -82.998 };
+  const osm = parseOsm({ elements }, bounds);
+  assert.equal(osm.buildings.length, 1);
+  assert.equal(osm.trees.length, 1);
+});
