@@ -102,3 +102,23 @@ test("openstreetmap.org data (fall-back) becomes the same elements", () => {
   assert.equal(osm.buildings.length, 1);
   assert.equal(osm.trees.length, 1);
 });
+
+test("race: a hung source does not hold up the next, and the loser is cancelled", async () => {
+  const { race } = await import("../../src/lib/osm.js");
+  let cancelled = false;
+  const hung = (signal) => new Promise((_, rej) => signal.addEventListener("abort", () => { cancelled = true; rej(new DOMException("a", "AbortError")); }));
+  const t0 = Date.now();
+  const v = await race([{ run: hung }, { after: 50, run: async () => "second" }]);
+  assert.equal(v, "second");
+  assert.ok(Date.now() - t0 < 1000);
+  assert.ok(cancelled, "the hung request is aborted");
+});
+
+test("race: a failure starts the next source at once; all failing gives the real error", async () => {
+  const { race } = await import("../../src/lib/osm.js");
+  const t0 = Date.now();
+  const v = await race([{ run: async () => { throw new Error("busy (429)"); } }, { after: 60000, run: async () => "fallback" }]);
+  assert.equal(v, "fallback");
+  assert.ok(Date.now() - t0 < 1000, "did not wait for the head start");
+  await assert.rejects(race([{ run: async () => { throw new Error("busy (504)"); } }, { after: 10, run: async () => { throw new TypeError("Failed to fetch"); } }]), /busy \(504\)/);
+});

@@ -19,6 +19,7 @@ export default function CampusView() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [osm, setOsm] = useState(null);
+  const placesFor = useRef(""); // the text the shown suggestions are for
   const [picked, setPicked] = useState(null);
   const [theme, setTheme] = useState("dark");
   // "Where are you going?"
@@ -71,7 +72,7 @@ export default function CampusView() {
       try {
         const near = osm?.bounds ? { lat: (osm.bounds.minlat + osm.bounds.maxlat) / 2, lon: (osm.bounds.minlon + osm.bounds.maxlon) / 2 } : null;
         const found = await searchPlaces(q, { signal: ctl.signal, near });
-        setPlaces(found); setActive(0); setPlacesOpen(true); setError("");
+        setPlaces(found); placesFor.current = q; setActive(0); setPlacesOpen(true); setError("");
       } catch (err) {
         if (err?.name !== "AbortError") setError(navigator.onLine === false ? "You are offline." : "Place search is not reachable right now. Try again in a moment.");
       }
@@ -95,8 +96,24 @@ export default function CampusView() {
     }
     setBusy("");
   };
-  const search = (e) => {
+  const search = async (e) => {
     e?.preventDefault();
+    const q = query.trim();
+    // Suggestions still for an earlier, shorter text (Enter pressed before
+    // they caught up): search the whole text now instead.
+    if (placesFor.current !== q && q.length >= 2) {
+      setPlacesBusy(true);
+      try {
+        const found = await searchPlaces(q);
+        placesFor.current = q;
+        setPlaces(found);
+        if (found[0]) load(found[0]); else setError(`Nothing found for "${q}".`);
+      } catch {
+        setError("Place search is not reachable right now. Try again in a moment.");
+      }
+      setPlacesBusy(false);
+      return;
+    }
     if (places[active]) load(places[active]);
   };
   // An Overpass JSON file (e.g. exported from overpass-turbo.eu).

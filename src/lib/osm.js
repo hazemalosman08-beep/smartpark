@@ -100,28 +100,110 @@ export function limitBounds(b) {
   return { bounds: { minlat: lat - halfH, maxlat: lat + halfH, minlon: lon - halfW, maxlon: lon + halfW }, limited };
 }
 
-async function overpass(query, signal, onStatus) {
-  let last = null;
-  for (const server of OVERPASS_SERVERS) {
+// Abort when the caller aborts or when we give up on this request.
+function linked(signal) {
+  const ctl = new AbortController();
+  const stop = () => ctl.abort();
+  if (signal?.aborted) ctl.abort(); else signal?.addEventListener("abort", stop, { once: true });
+  return { signal: ctl.signal, abort: stop, done: () => signal?.removeEventListener("abort", stop) };
+}
+
+async function overpassOne(server, query, signal) {
+  const res = await fetch(server, { method: "POST", body: new URLSearchParams({ data: query }), signal });
+  if (!res.ok) throw new Error(`busy (${res.status})`);
+  return res.json();
+}
+
+/**
+ * Several sources tried in turn, each started after a short head start for
+ * the one before (or at once if that one has failed), so one slow or hung
+ * server never holds everything up. The first good answer wins and the rest
+ * are cancelled. sources: [{ after: ms head start, run: (signal) => Promise }].
+ */
+export function race(sources, signal) {
+  const own = linked(signal);
+  return new Promise((resolve, reject) => {
+    let failed = 0, started = 0, settled = false, timer = null;
+    const errors = [];
+    const finish = (fn, v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      own.abort();
+      own.done();
+      fn(v);
+    };
+    const startNext = () => {
+      clearTimeout(timer);
+      if (settled || started >= sources.length) return;
+      const i = started++;
+      if (started < sources.length) timer = setTimeout(startNext, sources[started].after ?? 0);
+      Promise.resolve().then(() => sources[i].run(own.signal)).then((v) => finish(resolve, v), (err) => {
+        errors[i] = err;
+        failed += 1;
+        if (signal?.aborted) return finish(reject, new DOMException("aborted", "AbortError"));
+        if (failed === sources.length) return finish(reject, errors.find((e) => e?.message && e.name !== "AbortError") || new Error("map servers unavailable"));
+        if (failed === started) startNext(); // everything running has failed: don't wait
+      });
+    };
+    if (signal?.aborted) return finish(reject, new DOMException("aborted", "AbortError"));
+    signal?.addEventListener("abort", () => finish(reject, new DOMException("aborted", "AbortError")), { once: true });
+    startNext();
+  });
+}
+
+// ---- cache: an area downloaded once opens instantly afterwards ------------
+
+const CACHE_DB = "smartpark-osm", CACHE_DAYS = 14;
+const memory = new Map();
+
+function cacheKey(box) {
+  return [box.minlat, box.minlon, box.maxlat, box.maxlon].map((v) => v.toFixed(4)).join(",");
+}
+
+function openCache() {
+  return new Promise((resolve) => {
     try {
-      onStatus?.(`Downloading map data (${new URL(server).host})…`);
-      const res = await fetch(server, { method: "POST", body: new URLSearchParams({ data: query }), signal });
-      if (res.ok) return await res.json();
-      last = new Error(`busy (${res.status})`);
-    } catch (err) {
-      if (err?.name === "AbortError") throw err;
-      last = err;
-    }
-  }
-  throw last || new Error("map servers unavailable");
+      const req = indexedDB.open(CACHE_DB, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("areas");
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+async function cacheGet(key) {
+  if (memory.has(key)) return memory.get(key);
+  const db = await openCache();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const req = db.transaction("areas").objectStore("areas").get(key);
+      req.onsuccess = () => {
+        const v = req.result;
+        resolve(v && Date.now() - v.at < CACHE_DAYS * 864e5 ? v.data : null);
+      };
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+async function cachePut(key, data) {
+  memory.set(key, data);
+  const db = await openCache();
+  if (!db) return;
+  try { db.transaction("areas", "readwrite").objectStore("areas").put({ at: Date.now(), data }, key); } catch { /* storage full or blocked: fine */ }
 }
 
 /** Everything needed for the 3D map inside the bounds (plus a margin, in metres). */
-export async function fetchArea(bounds, { margin = 120, signal, onStatus } = {}) {
+export async function fetchArea(bounds, { margin = 120, signal, onStatus, fresh = false } = {}) {
   const dLat = margin / 111320, dLon = margin / (111320 * Math.cos(((bounds.minlat + bounds.maxlat) / 2) * Math.PI / 180));
   const box = { minlat: bounds.minlat - dLat, minlon: bounds.minlon - dLon, maxlat: bounds.maxlat + dLat, maxlon: bounds.maxlon + dLon };
-  const bb = [box.minlat, box.minlon, box.maxlat, box.maxlon].map((v) => v.toFixed(6)).join(",");
-  const q = `[out:json][timeout:90][bbox:${bb}];
+  const key = cacheKey(box);
+  let data = fresh ? null : await cacheGet(key);
+  if (!data) {
+    const bb = [box.minlat, box.minlon, box.maxlat, box.maxlon].map((v) => v.toFixed(6)).join(",");
+    const q = `[out:json][timeout:25][bbox:${bb}];
 (
   way["building"]; relation["building"]["type"="multipolygon"];
   way["building:part"];
@@ -135,35 +217,57 @@ export async function fetchArea(bounds, { margin = 120, signal, onStatus } = {})
   way["railway"~"^(rail|light_rail|tram|subway)$"];
 );
 out geom tags;`;
-  let data;
-  try {
-    data = await overpass(q, signal, onStatus);
-  } catch (err) {
-    if (err?.name === "AbortError") throw err;
-    // Last resort: OpenStreetMap's own server, in small tiles.
-    data = await fetchFromOsmApi(box, { signal, onStatus });
+    onStatus?.("Downloading map data…");
+    // The main Overpass server first; if it has not answered in a few
+    // seconds a mirror joins, then OpenStreetMap's own server (in tiles).
+    data = await race([
+      { run: (s) => overpassOne(OVERPASS_SERVERS[0], q, s) },
+      { after: 5000, run: (s) => overpassOne(OVERPASS_SERVERS[1], q, s) },
+      { after: 3000, run: (s) => fetchFromOsmApi(box, { signal: s, onStatus }) },
+      { after: 10000, run: (s) => overpassOne(OVERPASS_SERVERS[2], q, s) },
+    ], signal);
+    cachePut(key, data);
+  } else {
+    onStatus?.("Opening the saved map…");
   }
+  onStatus?.("Building the 3D map…");
   return { ...parseOsm(data, bounds), fetchedAt: new Date().toISOString(), bounds };
 }
 
 /**
  * The same data from api.openstreetmap.org (OSM XML, at most 50 000 nodes per
- * call): the area is read in tiles, one after another, and joined.
+ * call): the area is read in tiles, several at a time, and joined. A tile the
+ * server refuses as too big is split in four.
  */
-export async function fetchFromOsmApi(box, { signal, onStatus, tile = 0.006 } = {}) {
+export async function fetchFromOsmApi(box, { signal, onStatus, tile = 0.008, parallel = 4 } = {}) {
   const nodes = new Map(), ways = new Map(), rels = new Map();
   const rows = Math.max(1, Math.ceil((box.maxlat - box.minlat) / tile));
   const cols = Math.max(1, Math.ceil((box.maxlon - box.minlon) / (tile * 1.33)));
-  let n = 0;
+  const queue = [];
   for (let r = 0; r < rows; r += 1) for (let c = 0; c < cols; c += 1) {
-    n += 1;
-    onStatus?.(`Downloading map data from openstreetmap.org (${n}/${rows * cols})…`);
-    const la0 = box.minlat + ((box.maxlat - box.minlat) * r) / rows, la1 = box.minlat + ((box.maxlat - box.minlat) * (r + 1)) / rows;
-    const lo0 = box.minlon + ((box.maxlon - box.minlon) * c) / cols, lo1 = box.minlon + ((box.maxlon - box.minlon) * (c + 1)) / cols;
-    const res = await fetch(`${OSM_API}?bbox=${lo0.toFixed(6)},${la0.toFixed(6)},${lo1.toFixed(6)},${la1.toFixed(6)}`, { signal });
-    if (!res.ok) throw new Error(`OpenStreetMap is busy (${res.status}). Try again in a minute.`);
-    osmXmlInto(await res.text(), nodes, ways, rels);
+    queue.push([
+      box.minlon + ((box.maxlon - box.minlon) * c) / cols, box.minlat + ((box.maxlat - box.minlat) * r) / rows,
+      box.minlon + ((box.maxlon - box.minlon) * (c + 1)) / cols, box.minlat + ((box.maxlat - box.minlat) * (r + 1)) / rows,
+    ]);
   }
+  let total = queue.length, done = 0;
+  const worker = async () => {
+    while (queue.length) {
+      const [lo0, la0, lo1, la1] = queue.shift();
+      const res = await fetch(`${OSM_API}?bbox=${lo0.toFixed(6)},${la0.toFixed(6)},${lo1.toFixed(6)},${la1.toFixed(6)}`, { signal });
+      if (res.status === 400 && lo1 - lo0 > 0.001) {
+        const mx = (lo0 + lo1) / 2, my = (la0 + la1) / 2;
+        queue.push([lo0, la0, mx, my], [mx, la0, lo1, my], [lo0, my, mx, la1], [mx, my, lo1, la1]);
+        total += 3;
+        continue;
+      }
+      if (!res.ok) throw new Error(`OpenStreetMap is busy (${res.status}). Try again in a minute.`);
+      osmXmlInto(await res.text(), nodes, ways, rels);
+      done += 1;
+      onStatus?.(`Downloading map data… ${Math.round((done / total) * 100)}%`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(parallel, queue.length) }, worker));
   return osmToElements(nodes, ways, rels);
 }
 
