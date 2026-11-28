@@ -511,7 +511,7 @@ export class CampusScene {
   // spaces, coloured green / amber / red. Named lots, plus unnamed ones big
   // enough to matter when there is data.
   addLotLabels() {
-    const t = this.theme, osm = this.osm, occ = this.occ;
+    const t = this.theme, osm = this.osm, occ = this.occ, staff = this.staff, feeds = this.feeds || new Map();
     for (const sp of [...this.labels.children]) {
       if (!sp.userData.lot) continue;
       this.labels.remove(sp);
@@ -520,32 +520,49 @@ export class CampusScene {
     for (const lot of osm.parking) {
       if (lot.space) continue;
       const o = occ?.get(lot.id);
-      if (!lot.name && !(o && o.total >= 15)) continue;
+      // Staff see every lot (each can get a camera); drivers named or big ones.
+      if (!lot.name && !(o && o.total >= 15) && !(staff && lot.id)) continue;
       const c = centre(lot.outer);
       const garage = /multi|underground|rooftop/.test(lot.kind);
       const bld = garage ? osm.buildings.find((b) => b.garage && b.name === lot.name) : null;
       const name = lot.name || (garage ? "Parking structure" : "Parking");
       let label;
-      if (o) {
+      const addHint = staff && lot.id && !feeds.has(lot.id) ? "   + Add live feed" : "";
+      if (o?.stale) {
+        label = mapLabel(`${name}  no recent data`, { bg: LEVEL_COLOR.unknown, fg: "#fff", badge: "P", badgeFg: LEVEL_COLOR.unknown });
+      } else if (o) {
         const level = occupancyLevel(o);
-        label = mapLabel(`${name}  ${o.free ? `${o.free} free` : "Full"}`, { bg: LEVEL_COLOR[level], fg: level === "filling" ? "#1c1917" : "#fff", badge: "P", badgeFg: LEVEL_COLOR[level] });
+        label = mapLabel(`${o.live ? "● LIVE  " : ""}${name}  ${o.free ? `${o.free} free` : "Full"}${addHint}`, { bg: LEVEL_COLOR[level], fg: level === "filling" ? "#1c1917" : "#fff", badge: "P", badgeFg: LEVEL_COLOR[level] });
       } else {
-        label = mapLabel(`${name}${lot.capacity ? `  ${lot.capacity}` : ""}`, { bg: t.lotLabel, fg: "#fff", badge: "P" });
+        label = mapLabel(`${name}${lot.capacity ? `  ${lot.capacity}` : ""}${addHint}`, { bg: addHint ? "#166534" : t.lotLabel, fg: "#fff", badge: "P", badgeFg: addHint ? "#166534" : "#1d70c2" });
       }
       label.sprite.position.set(c.x, (bld?.height || 0) + 8, c.y);
       label.sprite.scale.set(label.aspect * 0.025, 0.025, 1);
       label.sprite.userData.lot = lot;
-      label.sprite.userData.rank = (garage ? 2000 : 0) + (lot.name ? 1000 : 0) + (o?.total || lot.capacity || 0);
+      label.sprite.userData.rank = (o?.live ? 5000 : 0) + (garage ? 2000 : 0) + (lot.name ? 1000 : 0) + (o?.total || lot.capacity || 0);
       this.labels.add(label.sprite);
     }
   }
 
   /** Occupancy per lot (Map id -> { free, total }) or null: colours and labels. */
-  setOccupancy(occ) {
+  setOccupancy(occ, { staff = false, feeds = null } = {}) {
     this.occ = occ;
+    this.staff = staff;
+    this.feeds = feeds;
     if (!this.osm) return;
     this.paintOccupancy();
     if (this.tripData) this.setTrip(this.tripData, { fly: false });
+  }
+
+  /** Where a lot is on screen (CSS pixels in the canvas), or null if not in view. */
+  screenOf(lot) {
+    if (!lot?.outer?.length) return null;
+    const c = centre(lot.outer);
+    const garage = /multi|underground|rooftop/.test(lot.kind || "") ? this.osm?.buildings.find((b) => b.garage && b.name === lot.name) : null;
+    const v = new THREE.Vector3(c.x, (garage?.height || 0) + 2, c.y).project(this.camera);
+    if (v.z > 1 || Math.abs(v.x) > 1.2 || Math.abs(v.y) > 1.2) return null;
+    const el = this.renderer.domElement;
+    return { x: (v.x * 0.5 + 0.5) * el.clientWidth, y: (-v.y * 0.5 + 0.5) * el.clientHeight };
   }
 
   paintOccupancy() {

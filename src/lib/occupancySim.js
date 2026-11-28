@@ -77,7 +77,7 @@ export function createSimulation(osm, { seed = 7 } = {}) {
 
 /** Status of a lot from its free spaces: plenty / filling / full. */
 export function occupancyLevel(o) {
-  if (!o || !o.total) return "unknown";
+  if (!o || !o.total || o.stale) return "unknown";
   const f = o.free / o.total;
   if (o.free === 0) return "full";
   if (f <= 0.1) return "almost";

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock, MapPin, Moon, Search, Sun, X } from "lucide-react";
+import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock, MapPin, Moon, Plus, Search, ShieldCheck, Sun, Video, X } from "lucide-react";
+import { feedOccupancy, placeKey } from "@/lib/campusFeeds";
 import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, fetchRaw, mainOutlineBounds, mergeOsm, tilesToLoad, toLatLon, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
@@ -74,11 +75,62 @@ function rankParking(osm, building, permit, occ) {
   return all.map((o, i) => ({ o, i })).sort((a, b) => rank(a.o) - rank(b.o) || a.i - b.i).map((x) => x.o).slice(0, 5);
 }
 
+// The card of a picked lot, pinned to the lot on the map (it follows the
+// view). Staff can add, open or remove the lot's live feed.
+function LotCard({ lot, engine, o, feed, staff, active, onAdd, onOpen, onRemove, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    let raf;
+    const loop = () => {
+      const p = engine.current?.screenOf(lot);
+      const el = ref.current;
+      if (el) {
+        if (p) { el.style.left = `${p.x}px`; el.style.top = `${p.y}px`; el.style.visibility = "visible"; } else el.style.visibility = "hidden";
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    loop();
+    return () => cancelAnimationFrame(raf);
+  }, [lot, engine]);
+  const used = o && o.total ? 1 - o.free / o.total : 0;
+  return (
+    <div ref={ref} className="absolute z-10 w-60 -translate-x-1/2 -translate-y-[calc(100%+14px)] rounded-xl bg-[#14361f]/95 p-3 text-center text-sm text-white shadow-2xl ring-2 ring-green-400/70 backdrop-blur" style={{ visibility: "hidden" }}>
+      <button onClick={onClose} aria-label="Close" className="absolute right-2 top-2 text-green-100/60 hover:text-white"><X className="h-3.5 w-3.5" /></button>
+      <p className="px-4 text-base font-bold leading-tight">{lot.name || (/multi/.test(lot.kind) ? "Parking structure" : "Parking lot")}</p>
+      <p className="mt-0.5 text-[11px] text-green-100/70">{/multi/.test(lot.kind) ? "Parking structure" : "Surface lot"}{lot.point ? " · location only" : ""}{lot.capacity ? ` · ${lot.capacity} spaces` : ""}{lot.fee === "yes" ? " · paid" : ""}{lot.access && lot.access !== "yes" ? ` · ${lot.access}` : ""}</p>
+      {o && (
+        <div className="mt-2 text-left">
+          <p className="flex items-baseline justify-between"><FreeBadge o={o} className="text-sm" /><span className="text-[11px] text-green-100/60">of {o.total}{o.estimated ? " (size estimate)" : ""}</span></p>
+          {!o.stale && <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full transition-all duration-700" style={{ width: `${Math.round(used * 100)}%`, background: LEVEL_COLOR[occupancyLevel(o)] }} /></div>}
+          <p className="mt-1 text-[10px] text-green-100/60">{o.live ? `Camera reading ${ago(o.at)}` : `Simulated: ${o.trend > 0 ? "filling up" : o.trend < 0 ? "emptying" : "steady"}`}</p>
+        </div>
+      )}
+      {!o && !staff && <p className="mt-1 text-[11px] text-green-100/60">No camera on this lot yet</p>}
+      {staff && !feed && lot.id && (
+        <button onClick={onAdd} className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#0b1f12] px-3 py-2 text-sm font-medium text-white ring-1 ring-white/10 hover:bg-black">
+          <Plus className="h-4 w-4" /> Add live feed
+        </button>
+      )}
+      {staff && feed && (
+        <div className="mt-2.5 flex gap-1.5">
+          <button onClick={() => onOpen(feed)} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#0b1f12] px-2 py-1.5 text-xs text-white ring-1 ring-white/10 hover:bg-black">
+            <Video className="h-3.5 w-3.5" /> {active ? "Camera running" : "Open camera"}
+          </button>
+          <button onClick={() => onRemove(feed)} className="rounded-lg px-2 py-1.5 text-xs text-red-200 ring-1 ring-red-400/40 hover:bg-red-500/10">Remove</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FreeBadge({ o, className = "" }) {
   if (!o) return null;
   const level = occupancyLevel(o);
-  return <span className={`font-semibold tabular-nums ${className}`} style={{ color: LEVEL_COLOR[level] }}>{o.free ? `${o.free} free` : "Full"}</span>;
+  if (o.stale) return <span className={`font-semibold ${className}`} style={{ color: LEVEL_COLOR.unknown }}>No recent data</span>;
+  return <span className={`font-semibold tabular-nums ${className}`} style={{ color: LEVEL_COLOR[level] }}>{o.live && <span className="mr-1 text-[0.8em] text-green-300">● LIVE</span>}{o.free ? `${o.free} free` : "Full"}</span>;
 }
+
+const ago = (t) => { const s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; };
 
 // A whole complex in 3D from OpenStreetMap: find it by name, see every
 // building, road and parking lot. (Occupancy from cameras comes on top later.)
@@ -86,7 +138,8 @@ function FreeBadge({ o, className = "" }) {
 // or reopened (it then starts clean).
 let visitOsm = null;
 
-export default function CampusView() {
+export default function CampusView({ mode = "user", feeds = [], activeFeedId = null, onAddFeed, onOpenFeed, onRemoveFeed }) {
+  const staff = mode === "staff";
   const canvasRef = useRef(null);
   const engine = useRef(null);
   const fileRef = useRef(null);
@@ -121,10 +174,9 @@ export default function CampusView() {
   const [permit, setPermit] = useState(() => { try { return localStorage.getItem("smartpark.permit") === "1"; } catch { return false; } });
   // Preview of live camera data with made-up numbers (clearly labelled).
   const [simOn, setSimOn] = useState(false);
-  const [occ, setOcc] = useState(null); // Map lot id -> { free, total, estimated, trend }
+  const [simOcc, setOcc] = useState(null); // simulated: Map lot id -> { free, total, estimated, trend }
   const [occAt, setOccAt] = useState(0);
   const occRef = useRef(null);
-  occRef.current = occ;
 
   useEffect(() => {
     const e = new CampusScene(canvasRef.current, { onPick: setPicked });
@@ -219,12 +271,28 @@ export default function CampusView() {
   }, [simOn, osm?.name, osm?.fetchedAt]); // eslint-disable-line react-hooks/exhaustive-deps
   // Lots loaded later get numbers at once.
   useEffect(() => { if (simRef.current && osm) { simRef.current.ensure(osm); setOcc(simRef.current.snapshot()); } }, [osm]);
-  useEffect(() => { engine.current?.setOccupancy(occ); }, [occ]);
+  // Live feeds of this place (real counts from the lots' cameras) on top of
+  // the simulated preview (if it is on). Re-checked every 30 s for age.
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => { const id = setInterval(() => setClock(Date.now()), 30000); return () => clearInterval(id); }, []);
+  const key = osm ? placeKey(osm) : "";
+  const placeFeeds = useMemo(() => feeds.filter((f) => f.place === key), [feeds, key]);
+  const feedOcc = useMemo(() => feedOccupancy(placeFeeds, key, clock), [placeFeeds, key, clock]);
+  const occ = useMemo(() => {
+    if (!simOcc && !feedOcc.size) return null;
+    const m = new Map(simOcc || []);
+    for (const [k, v] of feedOcc) m.set(k, v);
+    return m;
+  }, [simOcc, feedOcc]);
+  occRef.current = occ;
+  const feedByLot = useMemo(() => new Map(placeFeeds.map((f) => [f.lotId, f])), [placeFeeds]);
+  useEffect(() => { engine.current?.setOccupancy(occ, { staff, feeds: feedByLot }); }, [occ, staff, feedByLot]);
   const occTotals = useMemo(() => {
     if (!occ) return null;
     let free = 0, total = 0, estimated = 0;
-    for (const o of occ.values()) { free += o.free; total += o.total; if (o.estimated) estimated += 1; }
-    return { free, total, estimated, lots: occ.size };
+    let live = 0;
+    for (const o of occ.values()) { if (o.stale) continue; free += o.free; total += o.total; if (o.estimated) estimated += 1; if (o.live) live += 1; }
+    return { free, total, estimated, lots: occ.size, live };
   }, [occ]);
   const buildingsList = useMemo(() => (osm ? destinations(osm) : []), [osm]);
   const suggestions = useMemo(() => searchDestinations(buildingsList, goText), [buildingsList, goText]);
@@ -444,8 +512,31 @@ export default function CampusView() {
                     <span className="shrink-0 text-right text-xs leading-tight text-amber-200"><Footprints className="ml-auto h-3.5 w-3.5" />{o.walkMinutes} min<br /><span className="text-neutral-500">{o.walkMeters} m</span></span>
                   </button>
                 ))}
-                <p className="pt-1 text-[11px] text-neutral-500">{occ ? "Ranked by walking distance; full lots last. Free spaces are SIMULATED (preview)." : "Ranked by walking distance (estimated). Free spaces appear here once the lots' cameras are connected."}</p>
+                <p className="pt-1 text-[11px] text-neutral-500">{occ ? `Ranked by walking distance; full lots last.${simOcc ? " Free spaces are SIMULATED (preview) except lots marked LIVE." : ""}` : "Ranked by walking distance (estimated). Free spaces appear here once the lots' cameras are connected."}</p>
               </div>
+            )}
+          </section>
+        )}
+        {osm && staff && (
+          <section className="rounded-xl border border-green-500/30 bg-green-500/[0.05] p-3 text-sm">
+            <p className="flex items-center gap-2 font-semibold text-green-100"><ShieldCheck className="h-4 w-4 text-green-300" /> Staff: live feeds</p>
+            <p className="mt-1 text-xs text-green-100/70">Tap a parking lot on the map, then <b>+ Add live feed</b> to connect its camera. Drivers then see its free spaces.</p>
+            {placeFeeds.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {placeFeeds.map((f) => {
+                  const o = feedOcc.get(f.lotId);
+                  const lot = osm.parking.find((p) => p.id === f.lotId);
+                  return (
+                    <li key={f.id}>
+                      <button onClick={() => { if (lot) { engine.current?.flyToLot(lot); setPicked(lot); } }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-neutral-200 ring-1 ring-white/10 hover:bg-white/5">
+                        <Video className={`h-3.5 w-3.5 shrink-0 ${f.id === activeFeedId ? "text-green-400" : "text-neutral-500"}`} />
+                        <span className="min-w-0 flex-1 truncate">{f.lotName || "Unnamed lot"}</span>
+                        {o ? <FreeBadge o={o} /> : <span className="text-neutral-500">no reading yet</span>}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </section>
         )}
@@ -459,7 +550,7 @@ export default function CampusView() {
                 <Stat icon={Building2} value={counts.complex} label={counts.hasOutline ? `buildings (${counts.named} named)` : "buildings in view"} />
                 <Stat icon={Car} value={counts.hasOutline ? summary.onSite : summary.lots} label={counts.hasOutline ? `lots on site · ${summary.lots - summary.onSite} nearby` : `lots${summary.garages ? ` (${summary.garages} garages)` : ""}`} />
                 {occTotals
-                  ? <Stat icon={Activity} value={occTotals.free.toLocaleString()} label={`free of ${occTotals.total.toLocaleString()} (simulated)`} />
+                  ? <Stat icon={Activity} value={occTotals.free.toLocaleString()} label={`free of ${occTotals.total.toLocaleString()} (${simOcc ? (occTotals.live ? `${occTotals.live} live, rest simulated` : "simulated") : `live, ${occTotals.live} lot${occTotals.live === 1 ? "" : "s"}`})`} />
                   : <Stat value={summary.capacity ? summary.capacity.toLocaleString() : "—"} label={summary.capacity ? `spaces in ${summary.withCapacity} lots` : "capacity unknown"} />}
               </div>
               <p className="mt-3 text-xs text-neutral-500">
@@ -523,16 +614,16 @@ export default function CampusView() {
           </p>
         )}
         {occ && (
-          <div className="pointer-events-none absolute left-3 top-3 max-w-[70%] rounded-xl bg-black/65 px-3 py-2 text-xs text-white ring-1 ring-amber-400/40 backdrop-blur">
-            <p className="flex items-center gap-2 font-semibold text-amber-200">
-              <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" /></span>
-              SIMULATED preview · not real camera data
+          <div className={`pointer-events-none absolute left-3 top-3 max-w-[70%] rounded-xl bg-black/65 px-3 py-2 text-xs text-white ring-1 backdrop-blur ${simOcc ? "ring-amber-400/40" : "ring-green-400/40"}`}>
+            <p className={`flex items-center gap-2 font-semibold ${simOcc ? "text-amber-200" : "text-green-200"}`}>
+              <span className="relative flex h-2 w-2"><span className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${simOcc ? "bg-amber-400" : "bg-green-400"}`} /><span className={`relative inline-flex h-2 w-2 rounded-full ${simOcc ? "bg-amber-400" : "bg-green-400"}`} /></span>
+              {simOcc ? `SIMULATED preview · not real camera data${feedOcc.size ? ` (except ${feedOcc.size} LIVE lot${feedOcc.size === 1 ? "" : "s"})` : ""}` : `Live from ${feedOcc.size} camera${feedOcc.size === 1 ? "" : "s"}`}
             </p>
             <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-neutral-300">
               <span><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ background: LEVEL_COLOR.plenty }} />Plenty</span>
               <span><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ background: LEVEL_COLOR.filling }} />Filling up</span>
               <span><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ background: LEVEL_COLOR.almost }} />Almost full / full</span>
-              <span className="text-neutral-500">updated {new Date(occAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+              {simOcc && <span className="text-neutral-500">updated {new Date(occAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>}
             </p>
           </div>
         )}
@@ -553,21 +644,8 @@ export default function CampusView() {
           </div>
         )}
         {picked && !picked.building && (
-          <div className="absolute bottom-10 left-3 rounded-xl bg-black/70 px-4 py-3 text-sm text-white ring-1 ring-white/10 backdrop-blur">
-            <p className="font-semibold">{picked.name || "Parking"}</p>
-            <p className="text-xs text-neutral-300">{/multi/.test(picked.kind) ? "Parking structure" : "Surface lot"}{picked.point ? " · location only (size approximate)" : ""}{picked.capacity ? ` · ${picked.capacity} spaces` : ""}{picked.fee === "yes" ? " · paid" : ""}{picked.access && picked.access !== "yes" ? ` · ${picked.access}` : ""}</p>
-            {occ?.get(picked.id) ? (() => {
-              const o = occ.get(picked.id);
-              const used = 1 - o.free / o.total;
-              return (
-                <div className="mt-2 w-56">
-                  <p className="flex items-baseline justify-between text-sm"><FreeBadge o={o} className="text-base" /><span className="text-xs text-neutral-400">of {o.total}{o.estimated ? " (size estimate)" : ""}</span></p>
-                  <div className="mt-1 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full transition-all duration-700" style={{ width: `${Math.round(used * 100)}%`, background: LEVEL_COLOR[occupancyLevel(o)] }} /></div>
-                  <p className="mt-1 text-[11px] text-amber-200/80">Simulated: {o.trend > 0 ? "filling up" : o.trend < 0 ? "emptying" : "steady"}</p>
-                </div>
-              );
-            })() : <p className="mt-1 text-xs text-neutral-400">Free spaces: connect this lot&apos;s camera</p>}
-          </div>
+          <LotCard lot={picked} engine={engine} o={occ?.get(picked.id)} feed={feedByLot.get(picked.id)} staff={staff} active={feedByLot.get(picked.id)?.id === activeFeedId}
+            onAdd={() => onAddFeed?.(osm, picked)} onOpen={(f) => onOpenFeed?.(f)} onRemove={(f) => onRemoveFeed?.(f)} onClose={() => setPicked(null)} />
         )}
         <p className="absolute bottom-2 right-3 text-[11px] text-neutral-400">
           Map data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer" className="underline">{ATTRIBUTION}</a>

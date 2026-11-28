@@ -18,6 +18,7 @@ import { cameraLotToSiteLot } from "@/lib/vision/siteLink";
 import { areaCounts, complexStatuses, complexCalibration, loadComplex, newCamera, saveComplex } from "@/lib/complex";
 import { loadPhoto, savePhoto } from "@/lib/photoStore";
 import { CameraLinkDialog, ComplexBar } from "@/components/SmartPark/SitePanel";
+import { feedPictures, loadFeeds, newFeed, readingFrom, saveFeeds } from "@/lib/campusFeeds";
 
 const EMPTY_MAP = new Map();
 const CampusView = lazy(() => import("@/components/SmartPark/CampusView"));
@@ -137,6 +138,62 @@ export default function Home() {
   const lastIngest = useRef(0);
   const liveRef = useRef(live);
   liveRef.current = live;
+
+  // --------------------------------------------------- campus live feeds
+  // Staff attach a camera to a lot of the campus map: the Camera tab maps
+  // that lot; its readings become the lot's free spaces on the map.
+  const [feeds, setFeedsState] = useState(() => loadFeeds());
+  const setFeeds = useCallback((fn) => setFeedsState((prev) => { const next = typeof fn === "function" ? fn(prev) : fn; saveFeeds(next); return next; }), []);
+  const [feedSetup, setFeedSetup] = useState(null); // the feed being set up in the Camera tab
+  const [activeFeedId, setActiveFeedId] = useState(null); // the feed this camera is running as
+  const activeFeed = feeds.find((f) => f.id === activeFeedId) || null;
+  const addFeed = useCallback((osm, lot) => {
+    setFeedSetup(newFeed(osm, lot));
+    setActiveFeedId(null);
+    setCalibrationState(normalizeCalibration(EMPTY_CALIBRATION));
+    setOpenPicture({ stop: true, nonce: Date.now() });
+    setTab("camera");
+  }, []);
+  const openFeed = useCallback(async (feed) => {
+    setFeedSetup(feed);
+    setActiveFeedId(null);
+    setCalibrationState(normalizeCalibration(feed.calibration || EMPTY_CALIBRATION));
+    const blob = await feedPictures.load(feed.id);
+    setOpenPicture(blob ? { blob, nonce: Date.now() } : { stop: true, nonce: Date.now() });
+    setTab("camera");
+  }, []);
+  const saveFeedSetup = useCallback(async () => {
+    const f = feedSetup;
+    if (!f) return;
+    const live = liveRef.current;
+    const reading = live.statuses?.size ? readingFrom(calibration, live.statuses) : f.reading;
+    const saved = { ...f, calibration, reading, updatedAt: new Date().toISOString() };
+    setFeeds((prev) => [...prev.filter((x) => x.id !== f.id), saved]);
+    // The picture the lot was mapped on, to come back to it later.
+    try {
+      const blob = frame?.url ? await (await fetch(frame.url)).blob() : await loadPhoto();
+      if (blob) await feedPictures.save(f.id, blob);
+    } catch { /* the map still works without it */ }
+    setActiveFeedId(f.id);
+    setFeedSetup(null);
+    setTab("staff");
+  }, [feedSetup, calibration, frame, setFeeds]);
+  const removeFeed = useCallback((feed) => {
+    if (!window.confirm(`Remove the live feed from ${feed.lotName || "this lot"}?`)) return;
+    setFeeds((prev) => prev.filter((x) => x.id !== feed.id));
+    feedPictures.remove(feed.id);
+    setActiveFeedId((id) => (id === feed.id ? null : id));
+  }, [setFeeds]);
+  // While this camera runs as a feed, its readings go to that lot (every 2 s).
+  const lastFeedWrite = useRef(0);
+  useEffect(() => {
+    if (!activeFeedId || feedSetup || !live.statuses?.size || !(live.streaming || live.still)) return;
+    const now = Date.now();
+    if (now - lastFeedWrite.current < 2000) return;
+    lastFeedWrite.current = now;
+    const reading = readingFrom(calibration, live.statuses, now);
+    setFeeds((prev) => prev.map((f) => (f.id === activeFeedId ? { ...f, calibration, reading } : f)));
+  }, [live, activeFeedId, feedSetup, calibration, setFeeds]);
 
   const onLiveUpdate = useCallback((raw) => {
     if (raw.frame) { setFrame(raw.frame); return; }
@@ -287,6 +344,32 @@ export default function Home() {
 
       {/* The camera keeps running while the plan is open, so the plan stays live. */}
       <main className={tab === "camera" ? "flex flex-1 flex-col gap-3 p-3 lg:p-4" : "hidden"}>
+        {feedSetup && (
+          <section className="rounded-xl border border-green-500/40 bg-green-500/[0.07] p-3 text-sm text-green-50">
+            <p className="font-semibold">Live feed for {feedSetup.lotName || "a parking lot"} · {feedSetup.placeName}</p>
+            <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-xs text-green-100/80">
+              <li>Choose this lot&apos;s camera below: this device&apos;s camera, a phone, a video or a photo.</li>
+              <li>Map the spaces (Find spaces, or draw them).</li>
+              <li>Save: the lot on the Campus map then shows this camera&apos;s free spaces.</li>
+            </ol>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button onClick={saveFeedSetup} disabled={!calibration.stalls.length}
+                className="rounded-md bg-green-500 px-3 py-1.5 text-xs font-semibold text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40">
+                Save feed to lot{calibration.stalls.length ? ` (${calibration.stalls.length} spaces)` : ""}
+              </button>
+              <button onClick={() => { setFeedSetup(null); setTab("staff"); }} className="rounded-md px-3 py-1.5 text-xs text-green-100 ring-1 ring-green-400/40 hover:bg-white/5">Cancel</button>
+              {!calibration.stalls.length && <span className="text-[11px] text-green-100/60">Map at least one space to save.</span>}
+            </div>
+          </section>
+        )}
+        {!feedSetup && activeFeed && (
+          <section className="flex flex-wrap items-center gap-2 rounded-xl border border-green-500/30 bg-green-500/[0.05] px-3 py-2 text-xs text-green-100">
+            <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-green-400" /></span>
+            This camera is the live feed for <b>{activeFeed.lotName || "a lot"}</b> · {activeFeed.placeName}
+            {activeFeed.reading && <span className="text-green-200/70">· {activeFeed.reading.free} of {activeFeed.reading.total} free</span>}
+            <button onClick={() => setActiveFeedId(null)} className="ml-auto rounded-md px-2 py-1 ring-1 ring-green-400/40 hover:bg-white/5">Stop feed</button>
+          </section>
+        )}
         <ComplexBar
           complex={complex}
           activeId={complex?.activeId}
@@ -331,9 +414,12 @@ export default function Home() {
         )}
       </main>
 
-      {tab === "campus" && (
+      {(tab === "campus" || tab === "staff") && (
         <main className="flex flex-1 flex-col">
-          <Suspense fallback={<p className="p-6 text-sm text-neutral-400">Loading 3D…</p>}><CampusView /></Suspense>
+          <Suspense fallback={<p className="p-6 text-sm text-neutral-400">Loading 3D…</p>}>
+            <CampusView mode={tab === "staff" ? "staff" : "user"} feeds={feeds} activeFeedId={activeFeedId}
+              onAddFeed={addFeed} onOpenFeed={openFeed} onRemoveFeed={removeFeed} />
+          </Suspense>
         </main>
       )}
 

@@ -1,13 +1,16 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { Building2, Camera, Map, MonitorSmartphone, Navigation } from "lucide-react";
+import { Building2, Camera, Map, MonitorSmartphone, Navigation, ShieldCheck } from "lucide-react";
 import InstallButton from "@/components/SmartPark/InstallButton";
 
 const TABS = [
   { key: "camera", label: "Camera", icon: Camera, hint: "Detect & map" },
   { key: "lot", label: "Lot", icon: Map, hint: "Live plan" },
   { key: "driver", label: "Driver", icon: MonitorSmartphone, hint: "Guide screen" },
-  { key: "campus", label: "Campus", icon: Building2, hint: "Whole complex" },
+  // Two views of the same campus (to become two apps): drivers, and the
+  // complex's staff, who attach live camera feeds to its lots.
+  { key: "campus", label: "Campus", icon: Building2, hint: "User" },
+  { key: "staff", label: "Campus", icon: ShieldCheck, hint: "Staff" },
 ];
 
 export default function TopBar({ tab, setTab, status }) {
