@@ -23,17 +23,23 @@ export const OSM_API = "https://api.openstreetmap.org/api/0.6/map";
  * Suggestions while typing, like a map app: [{ id, name, detail, kind,
  * bounds, centre }]. near: { lat, lon } to prefer results close to it.
  */
-export async function searchPlaces(text, { signal, near = null, limit = 7 } = {}) {
+export async function searchPlaces(text, { signal, near = null, limit = 7, state = null } = {}) {
   const q = String(text || "").trim();
   if (q.length < 2) return [];
   const url = new URL(PHOTON);
   url.searchParams.set("q", q);
-  url.searchParams.set("limit", String(limit));
+  // Within a state: search its area, ask for more (neighbours' places in
+  // the box are dropped), keep only addresses in the state.
+  url.searchParams.set("limit", String(state ? limit * 3 : limit));
   url.searchParams.set("lang", "en");
-  if (near) { url.searchParams.set("lat", near.lat.toFixed(4)); url.searchParams.set("lon", near.lon.toFixed(4)); }
+  if (state?.bbox) {
+    const [w, sth, e, n] = state.bbox;
+    url.searchParams.set("bbox", [w - 0.3, sth - 0.3, e + 0.3, n + 0.3].map((v) => v.toFixed(2)).join(","));
+  } else if (near) { url.searchParams.set("lat", near.lat.toFixed(4)); url.searchParams.set("lon", near.lon.toFixed(4)); }
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`Place search is busy (${res.status}). Try again in a moment.`);
-  return photonToPlaces(await res.json());
+  const places = photonToPlaces(await res.json());
+  return (state ? places.filter((p) => p.state === state.name) : places).slice(0, limit);
 }
 
 /** Photon GeoJSON -> places (pure: tested without the network). */
@@ -58,7 +64,7 @@ export function photonToPlaces(geojson) {
     }
     const kind = String(p.osm_value || p.type || "").replace(/_/g, " ");
     const type = { N: "node", W: "way", R: "relation" }[p.osm_type];
-    out.push({ id, name, detail: fullAddress(p), kind, bounds, centre: { lat, lon }, area: Boolean(e), osm: type && p.osm_id ? { type, id: p.osm_id } : null });
+    out.push({ id, name, detail: fullAddress(p), kind, bounds, centre: { lat, lon }, area: Boolean(e), osm: type && p.osm_id ? { type, id: p.osm_id } : null, state: p.state || "", country: p.country || "" });
   }
   // Places with an outline (campuses, hospitals, buildings) before single
   // points (bus stops, bike stands); otherwise the search's own order.

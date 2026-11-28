@@ -201,3 +201,20 @@ test("closest parking: a visitor lot next door beats an open lot further away; p
   assert.deepEqual(nearestParking(osm, building, 3, { permit: false }).map((o) => o.lot.id), ["g", "o", "s"]);
   assert.deepEqual(nearestParking(osm, building, 3, { permit: true }).map((o) => o.lot.id), ["s", "g", "o"]);
 });
+
+test("search within a state: the state's area is searched and other states' places are dropped", async () => {
+  const { searchPlaces } = await import("../../src/lib/osm.js");
+  const { stateByCode } = await import("../../src/lib/usStates.js");
+  const feature = (name, state, lon, lat) => ({ type: "Feature", properties: { osm_type: "W", osm_id: Math.round(lon * -1000), name, state, country: "United States", osm_value: "place_of_worship" }, geometry: { type: "Point", coordinates: [lon, lat] } });
+  let asked = null;
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url) => { asked = new URL(url); return { ok: true, json: async () => ({ features: [feature("Mosque", "Michigan", -83.4, 42.5), feature("Mosque", "Ohio", -83.5, 41.6)] }) }; };
+  try {
+    const mi = await searchPlaces("mosque", { state: stateByCode("MI") });
+    assert.match(asked.searchParams.get("bbox"), /^-90\.72,41\.40,-82\.11,48\.61$/);
+    assert.deepEqual(mi.map((p) => p.state), ["Michigan"]);
+    const all = await searchPlaces("mosque");
+    assert.equal(asked.searchParams.get("bbox"), null);
+    assert.equal(all.length, 2);
+  } finally { globalThis.fetch = real; }
+});

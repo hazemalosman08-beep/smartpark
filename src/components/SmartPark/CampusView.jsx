@@ -3,6 +3,7 @@ import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, MapPi
 import { ATTRIBUTION, buildingCounts, destinations, fetchArea, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
+import { STATES, stateByCode } from "@/lib/usStates";
 
 // Closest parking; with occupancy data, full lots go to the end.
 function rankParking(osm, building, permit, occ) {
@@ -38,7 +39,10 @@ export default function CampusView() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [osm, setOsm] = useState(() => visitOsm);
-  const placesFor = useRef(""); // the text the shown suggestions are for
+  const placesFor = useRef(""); // the text (and state) the shown suggestions are for
+  // Search only in one state (remembered on this device; "" = anywhere).
+  const [stateCode, setStateCode] = useState(() => { try { return localStorage.getItem("smartpark.state") || ""; } catch { return ""; } });
+  const searchState = stateByCode(stateCode);
   const [picked, setPicked] = useState(null);
   const [theme, setTheme] = useState("dark");
   // "Where are you going?"
@@ -112,15 +116,16 @@ export default function CampusView() {
       setPlacesBusy(true);
       try {
         const near = osm?.bounds ? { lat: (osm.bounds.minlat + osm.bounds.maxlat) / 2, lon: (osm.bounds.minlon + osm.bounds.maxlon) / 2 } : null;
-        const found = await searchPlaces(q, { signal: ctl.signal, near });
-        setPlaces(found); placesFor.current = q; setActive(0); setPlacesOpen(true); setError("");
+        const found = await searchPlaces(q, { signal: ctl.signal, near, state: searchState });
+        setPlaces(found); placesFor.current = `${q}|${stateCode}`; setActive(0); setPlacesOpen(true); setError("");
       } catch (err) {
         if (err?.name !== "AbortError") setError(navigator.onLine === false ? "You are offline." : "Place search is not reachable right now. Try again in a moment.");
       }
       setPlacesBusy(false);
     }, 280);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [query]);
+  }, [query, stateCode]);
+  useEffect(() => { try { localStorage.setItem("smartpark.state", stateCode); } catch { /* blocked */ } }, [stateCode]);
 
   const load = async (place) => {
     setPlacesOpen(false); setError("");
@@ -142,11 +147,11 @@ export default function CampusView() {
     const q = query.trim();
     // Suggestions still for an earlier, shorter text (Enter pressed before
     // they caught up): search the whole text now instead.
-    if (placesFor.current !== q && q.length >= 2) {
+    if (placesFor.current !== `${q}|${stateCode}` && q.length >= 2) {
       setPlacesBusy(true);
       try {
-        const found = await searchPlaces(q);
-        placesFor.current = q;
+        const found = await searchPlaces(q, { state: searchState });
+        placesFor.current = `${q}|${stateCode}`;
         setPlaces(found);
         if (found[0]) load(found[0]); else setError(`Nothing found for "${q}".`);
       } catch {
@@ -188,7 +193,7 @@ export default function CampusView() {
               if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
               if (e.key === "Escape") setPlacesOpen(false);
             }}
-            placeholder="Search a university, hospital, stadium, address…"
+            placeholder={searchState ? `Search in ${searchState.name}…` : "Search a university, hospital, stadium, address…"}
             aria-label="Search a place"
             className="w-full rounded-full border border-neutral-700 bg-neutral-900 py-2.5 pl-8 pr-9 text-sm text-white shadow-sm focus:border-sky-500 focus:outline-none"
           />
@@ -210,9 +215,17 @@ export default function CampusView() {
             </div>
           )}
           {placesOpen && !placesBusy && query.trim().length >= 2 && places.length === 0 && typed.current && (
-            <div className="absolute z-30 mt-1 w-full rounded-xl border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-400">No places found</div>
+            <div className="absolute z-30 mt-1 w-full rounded-xl border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-400">No places found{searchState ? ` in ${searchState.name}` : ""}</div>
           )}
         </form>
+        <label className="-mt-1 flex items-center gap-2 px-1 text-xs text-neutral-400">
+          <MapPin className="h-3.5 w-3.5 shrink-0 text-sky-300" /> Search in
+          <select value={stateCode} onChange={(e) => { setStateCode(e.target.value); typed.current = true; }} aria-label="Search only in this state"
+            className="min-w-0 flex-1 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-white focus:border-sky-500 focus:outline-none">
+            <option value="">All states</option>
+            {STATES.map((st) => <option key={st.code} value={st.code}>{st.name}</option>)}
+          </select>
+        </label>
         {busy && <p className="flex items-center gap-2 text-sm text-sky-200"><Loader2 className="h-4 w-4 animate-spin" /> {busy}</p>}
         {error && <p className="rounded-md bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>}
         {osm?.limited && <p className="text-[11px] text-amber-200/80">This place is large: the middle 3 × 3 km are shown.</p>}
