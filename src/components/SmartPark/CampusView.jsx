@@ -142,7 +142,8 @@ export default function CampusView() {
                   <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" />
                   <span className="min-w-0">
                     <span className="block truncate text-sm text-white">{p.name}</span>
-                    <span className="block truncate text-[11px] text-neutral-400">{[p.kind, p.detail].filter(Boolean).join(" · ")}</span>
+                    <span className="block text-[11px] leading-snug text-neutral-400">{p.detail}</span>
+                    {p.kind && <span className="block text-[10px] uppercase tracking-wider text-neutral-500">{p.kind}</span>}
                   </span>
                 </button>
               ))}
@@ -208,6 +209,7 @@ export default function CampusView() {
             <section className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
               <p className="text-[11px] uppercase tracking-[0.18em] text-neutral-500">Complex</p>
               <p className="mt-1 text-lg font-semibold text-white">{osm.name}</p>
+              {osm.detail && <p className="text-xs text-neutral-400">{osm.detail}</p>}
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                 <Stat icon={Building2} value={osm.buildings.filter((b) => !b.part).length} label="buildings" />
                 <Stat icon={Car} value={summary.lots} label={`lots${summary.garages ? ` (${summary.garages} garages)` : ""}`} />

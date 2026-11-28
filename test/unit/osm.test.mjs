@@ -75,7 +75,8 @@ test("place search: suggestions with names, places, types and outlines", () => {
   const json = JSON.parse(fs.readFileSync(new URL("../fixtures/photon-henry-ford.json", import.meta.url)));
   const places = photonToPlaces(json);
   assert.equal(places[0].name, "Henry Ford Hospital");
-  assert.match(places[0].detail, /Detroit, Michigan/);
+  assert.equal(places[0].detail, "2799 West Grand Boulevard, Detroit, MI 48202, United States", "full address");
+  assert.equal(places.find((p) => /Rochester/.test(p.name)).detail, "1101 West University Drive, Rochester Hills, MI 48307, United States");
   assert.equal(places[0].kind, "hospital");
   assert.ok(places[0].bounds.maxlat > places[0].bounds.minlat && places[0].bounds.maxlon > places[0].bounds.minlon);
   assert.equal(places[places.length - 1].kind, "bicycle rental", "points without an outline come last");

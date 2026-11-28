@@ -56,14 +56,37 @@ export function photonToPlaces(geojson) {
       const d = 400 / 111320, dl = d / Math.cos((lat * Math.PI) / 180);
       bounds = { minlat: lat - d, maxlat: lat + d, minlon: lon - dl, maxlon: lon + dl };
     }
-    const where = [p.city || p.town || p.village || p.county, p.state, p.country].filter(Boolean);
     const kind = String(p.osm_value || p.type || "").replace(/_/g, " ");
-    out.push({ id, name, detail: [...new Set(where)].join(", "), kind, bounds, centre: { lat, lon }, area: Boolean(e) });
+    out.push({ id, name, detail: fullAddress(p), kind, bounds, centre: { lat, lon }, area: Boolean(e) });
   }
   // Places with an outline (campuses, hospitals, buildings) before single
   // points (bus stops, bike stands); otherwise the search's own order.
   return out.map((p, i) => ({ p, i })).sort((a, b) => (b.p.area - a.p.area) || a.i - b.i).map((x) => x.p);
 }
+
+/**
+ * The full address, like a map app: "2799 West Grand Boulevard, Detroit, MI
+ * 48202, United States". Parts that are missing are left out; US states are
+ * abbreviated.
+ */
+export function fullAddress(p) {
+  const street = [p.housenumber, p.street].filter(Boolean).join(" ");
+  const town = p.city || p.town || p.village || p.district || p.county || "";
+  const state = p.country === "United States" && US_STATES[p.state] ? US_STATES[p.state] : p.state || "";
+  const region = [state, p.postcode].filter(Boolean).join(" ");
+  const parts = [street !== p.name ? street : "", town, region, p.country].filter(Boolean);
+  return [...new Set(parts)].join(", ");
+}
+
+const US_STATES = {
+  Alabama: "AL", Alaska: "AK", Arizona: "AZ", Arkansas: "AR", California: "CA", Colorado: "CO", Connecticut: "CT", Delaware: "DE",
+  "District of Columbia": "DC", Florida: "FL", Georgia: "GA", Hawaii: "HI", Idaho: "ID", Illinois: "IL", Indiana: "IN", Iowa: "IA",
+  Kansas: "KS", Kentucky: "KY", Louisiana: "LA", Maine: "ME", Maryland: "MD", Massachusetts: "MA", Michigan: "MI", Minnesota: "MN",
+  Mississippi: "MS", Missouri: "MO", Montana: "MT", Nebraska: "NE", Nevada: "NV", "New Hampshire": "NH", "New Jersey": "NJ",
+  "New Mexico": "NM", "New York": "NY", "North Carolina": "NC", "North Dakota": "ND", Ohio: "OH", Oklahoma: "OK", Oregon: "OR",
+  Pennsylvania: "PA", "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", Tennessee: "TN", Texas: "TX", Utah: "UT",
+  Vermont: "VT", Virginia: "VA", Washington: "WA", "West Virginia": "WV", Wisconsin: "WI", Wyoming: "WY", "Puerto Rico": "PR",
+};
 
 // Large places (a whole city) are cut to their middle: more would be too much
 // to download and draw. About 3 x 3 km.
