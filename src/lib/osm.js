@@ -206,7 +206,7 @@ async function cachePut(key, data) {
 }
 
 /** Everything needed for the 3D map inside the bounds (plus a margin, in metres). */
-export async function fetchArea(bounds, { margin = 120, signal, onStatus, fresh = false, outlineOf = null } = {}) {
+export async function fetchArea(bounds, { margin = 300, signal, onStatus, fresh = false, outlineOf = null } = {}) {
   const outlineP = outlineOf ? fetchOutline(outlineOf, { signal, fresh }).catch(() => null) : Promise.resolve(null);
   const dLat = margin / 111320, dLon = margin / (111320 * Math.cos(((bounds.minlat + bounds.maxlat) / 2) * Math.PI / 180));
   const box = { minlat: bounds.minlat - dLat, minlon: bounds.minlon - dLon, maxlat: bounds.maxlat + dLat, maxlon: bounds.maxlon + dLon };
@@ -248,7 +248,7 @@ out geom tags;`;
   }
   const outline = await outlineP;
   onStatus?.("Building the 3D map…");
-  return { ...parseOsm(data, bounds, { outline }), fetchedAt: new Date().toISOString(), bounds };
+  return { ...parseOsm(data, bounds, { outline }), fetchedAt: new Date().toISOString(), bounds, margin };
 }
 
 /**

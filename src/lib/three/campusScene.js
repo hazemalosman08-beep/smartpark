@@ -99,15 +99,16 @@ export class CampusScene {
   // The view stays over the map (it fades out at its edge), and fine detail
   // is dropped when zoomed far out.
   keepInside() {
-    const R = this.radius;
-    if (!R) return;
+    const R = this.radius, h = this.half;
+    if (!R || !h) return;
     const t = this.controls.target;
-    const d = Math.hypot(t.x, t.z);
-    if (d > R) {
-      const k = R / d, dx = t.x * k - t.x, dz = t.z * k - t.z;
-      t.x += dx; t.z += dz;
+    const cx = Math.max(-h.x, Math.min(h.x, t.x)), cz = Math.max(-h.z, Math.min(h.z, t.z));
+    if (cx !== t.x || cz !== t.z) {
+      const dx = cx - t.x, dz = cz - t.z;
+      t.x = cx; t.z = cz;
       this.camera.position.x += dx; this.camera.position.z += dz;
     }
+    this.fitFog();
     const far = this.camera.position.distanceTo(t) > R * 1.4;
     if (this.detail) for (const o of this.detail) o.visible = !far;
   }
@@ -216,7 +217,7 @@ export class CampusScene {
       const pts = [...b.outer, ...(ch ? ch.lot.outer : [])];
       const xs = pts.map((p) => p.x), zs = pts.map((p) => p.y);
       const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs));
-      this.flyTo({ x: (Math.min(...xs) + Math.max(...xs)) / 2, z: (Math.min(...zs) + Math.max(...zs)) / 2 }, Math.max(160, span * 1.5));
+      this.flyTo({ x: (Math.min(...xs) + Math.max(...xs)) / 2, z: (Math.min(...zs) + Math.max(...zs)) / 2 }, Math.max(ch ? 160 : 340, span * 1.5));
     }
   }
 
@@ -231,7 +232,16 @@ export class CampusScene {
   // not from the camera: zoomed out, the complex sits on a soft round map
   // instead of a hard-edged slab.
   fitFog() {
-    if (this.scene.fog && this.radius) { this.scene.fog.near = this.radius * 0.8; this.scene.fog.far = this.radius * 1.25; }
+    // In units of the downloaded area's half-size (1 = its edge). Zoomed
+    // out: the last ~250 m fade into the background (no hard-edged slab).
+    // Zoomed in, the view is full of map anyway: the fade narrows and moves
+    // out, so buildings at the edge (drawn whole) stay visible.
+    if (!this.scene.fog || !this.half) return;
+    const k = Math.min(0.35, Math.max(0.08, 250 / Math.min(this.half.x, this.half.z)));
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    const z = Math.min(1, Math.max(0.12, dist / (this.radius * 1.2)));
+    this.scene.fog.near = 1 - k * z;
+    this.scene.fog.far = 1 + 0.4 * (1 - z);
   }
 
   setData(osm, { fit = true } = {}) {
@@ -473,12 +483,16 @@ export class CampusScene {
   /** Radius (m) of the downloaded area around the map's origin (its centre). */
   mapRadius() {
     const b = this.osm?.bounds;
+    const m = this.osm?.margin || 0;
     if (b && Number.isFinite(b.minlat)) {
       const kx = 111320 * Math.cos((((b.minlat + b.maxlat) / 2) * Math.PI) / 180);
-      return Math.max(((b.maxlon - b.minlon) / 2) * kx, ((b.maxlat - b.minlat) / 2) * 110540) + 120;
+      this.half = { x: ((b.maxlon - b.minlon) / 2) * kx + m, z: ((b.maxlat - b.minlat) / 2) * 110540 + m };
+    } else {
+      const e = this.extent();
+      this.half = { x: e.w / 2 + Math.abs(e.cx), z: e.h / 2 + Math.abs(e.cz) };
     }
-    const e = this.extent();
-    return Math.max(e.w, e.h) / 2 + Math.hypot(e.cx, e.cz);
+    RF_BOX.value.set(this.half.x, this.half.z);
+    return Math.max(this.half.x, this.half.z);
   }
 
   // Labels that would overlap on screen are hidden; bigger lots and garages
@@ -520,7 +534,7 @@ export class CampusScene {
   fit(snap = false) {
     // The complex itself when it has an outline, else the whole map.
     const pts = (this.osm.outline || []).flatMap((o) => o.outer);
-    let cx = 0, cz = 0, w = this.radius * 1.5, h = this.radius * 1.5;
+    let cx = 0, cz = 0, w = this.half.x * 1.7, h = this.half.z * 1.7;
     if (pts.length) {
       const xs = pts.map((p) => p.x), zs = pts.map((p) => p.y);
       cx = (Math.min(...xs) + Math.max(...xs)) / 2; cz = (Math.min(...zs) + Math.max(...zs)) / 2;
@@ -591,9 +605,10 @@ function paintGroups(geo, colors) {
   return g;
 }
 
-// Fog by distance from the map's centre (the origin) instead of from the
-// camera: the map fades softly into the background at the edge of the
-// downloaded area, at any zoom.
+// Fog by position on the map instead of distance from the camera: the map
+// fades softly into the background at the edge of the downloaded area (a
+// rounded rectangle, the area's half-size in RF_BOX), at any zoom.
+const RF_BOX = { value: new THREE.Vector2(1000, 1000) };
 function radialFog(group) {
   group.traverse((o) => {
     const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
@@ -603,14 +618,17 @@ function radialFog(group) {
       m.fog = true;
       const sprite = m.isSpriteMaterial;
       m.onBeforeCompile = (shader) => {
-        shader.vertexShader = shader.vertexShader.replace("#include <fog_vertex>", sprite
-          ? "#ifdef USE_FOG\n vFogDepth = length((modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xz);\n#endif"
+        shader.uniforms.rfBox = RF_BOX;
+        const depth = "vec2 rfQ = abs(rfXZ) / rfBox; vFogDepth = pow(pow(rfQ.x, 4.0) + pow(rfQ.y, 4.0), 0.25);";
+        shader.vertexShader = "uniform vec2 rfBox;\n" + shader.vertexShader.replace("#include <fog_vertex>", sprite
+          ? `#ifdef USE_FOG\n vec2 rfXZ = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xz; ${depth}\n#endif`
           : `#ifdef USE_FOG
   vec4 rfWorld = vec4(transformed, 1.0);
   #ifdef USE_INSTANCING
     rfWorld = instanceMatrix * rfWorld;
   #endif
-  vFogDepth = length((modelMatrix * rfWorld).xz);
+  vec2 rfXZ = (modelMatrix * rfWorld).xz;
+  ${depth}
 #endif`);
       };
       m.customProgramCacheKey = () => (sprite ? "radialFogSprite" : "radialFog");

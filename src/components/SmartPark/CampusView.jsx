@@ -12,6 +12,10 @@ function StepDot({ n, active = false, done = false }) {
   return <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${done ? "bg-sky-500/30 text-sky-100" : active ? "bg-amber-400 text-neutral-900" : "bg-neutral-700 text-neutral-300"}`}>{n}</span>;
 }
 
+// The lot chosen for the driver: the first option, unless even that is too
+// far to recommend (then nothing is chosen; the driver can still pick one).
+const firstChoice = (options) => (options[0] && options[0].allowed !== false && options[0].walkMeters <= FAR_WALK_M ? options[0] : null);
+
 // Closest parking; with occupancy data, full lots go to the end.
 function rankParking(osm, building, permit, occ) {
   const all = nearestParking(osm, building, 8, { permit });
@@ -80,7 +84,7 @@ export default function CampusView() {
   // Changing the permit switch re-ranks the current trip.
   useEffect(() => {
     try { localStorage.setItem("smartpark.permit", permit ? "1" : "0"); } catch { /* blocked */ }
-    setTrip((t) => { if (!t || !osm) return t; const options = rankParking(osm, t.building, permit, occRef.current); return { ...t, options, chosen: options[0] || null }; });
+    setTrip((t) => { if (!t || !osm) return t; const options = rankParking(osm, t.building, permit, occRef.current); return { ...t, options, chosen: firstChoice(options) }; });
   }, [permit, osm, simOn]);
   // The simulation: new numbers every few seconds while the preview is on.
   useEffect(() => {
@@ -104,7 +108,7 @@ export default function CampusView() {
   const suggestions = useMemo(() => searchDestinations(buildingsList, goText), [buildingsList, goText]);
   const goTo = (building) => {
     const options = rankParking(osm, building, permit, occRef.current);
-    setTrip({ building, options, chosen: options[0] || null });
+    setTrip({ building, options, chosen: firstChoice(options) });
     setGoText(building.name);
     setGoOpen(false);
     setPicked(null);
@@ -271,15 +275,20 @@ export default function CampusView() {
               )}
             </div>
             {trip && !trip.options.some((o) => o.allowed !== false && o.walkMeters <= FAR_WALK_M) && (
-              <p className="mt-3 rounded-lg bg-amber-500/10 px-2.5 py-2 text-xs text-amber-100 ring-1 ring-amber-400/30">
-                <b>No mapped parking lot within a 10-minute walk</b> of {trip.building.name}.
-                {trip.options[0] ? ` The closest mapped lot is ${trip.options[0].walkMeters >= 1000 ? `${(trip.options[0].walkMeters / 1000).toFixed(1)} km` : `${trip.options[0].walkMeters} m`} away.` : ""} OpenStreetMap has few lots mapped here; street parking near the building is not in the data.
-              </p>
+              <div className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2.5 text-xs text-amber-100 ring-1 ring-amber-400/30">
+                <p className="text-sm font-semibold">Look for street parking nearby</p>
+                <p className="mt-1">No parking lot near {trip.building.name} is in the map data, so street spots close to the building are your best option.</p>
+                {trip.options[0] && (
+                  <p className="mt-1 text-amber-200/70">
+                    The closest lot we know of is {trip.options[0].walkMeters >= 1000 ? `${(trip.options[0].walkMeters / 1000).toFixed(1)} km` : `${trip.options[0].walkMeters} m`} away (about {trip.options[0].walkMinutes} min on foot); lots are listed below if you prefer one.
+                  </p>
+                )}
+              </div>
             )}
             {trip && (
               <div className="mt-3 space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <p className="text-[11px] uppercase tracking-wider text-neutral-500">Closest parking</p>
+                  <p className="text-[11px] uppercase tracking-wider text-neutral-500">{trip.chosen || trip.options.some((o) => o.allowed !== false && o.walkMeters <= FAR_WALK_M) ? "Closest parking" : "Lots in the data (far)"}</p>
                   <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-neutral-300">
                     <input type="checkbox" checked={permit} onChange={(e) => setPermit(e.target.checked)} className="h-3.5 w-3.5 accent-amber-400" /> I have a parking permit
                   </label>
