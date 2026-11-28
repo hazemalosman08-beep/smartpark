@@ -19,7 +19,7 @@ import { cameraLotToSiteLot } from "@/lib/vision/siteLink";
 import { areaCounts, complexStatuses, complexCalibration, loadComplex, newCamera, saveComplex } from "@/lib/complex";
 import { loadPhoto, savePhoto } from "@/lib/photoStore";
 import { CameraLinkDialog, ComplexBar } from "@/components/SmartPark/SitePanel";
-import { feedPictures, loadFeeds, newFeed, readingFrom, saveFeeds } from "@/lib/campusFeeds";
+import { feedPictures, loadFeeds, mapToAerial, newFeed, readingFrom, saveFeeds } from "@/lib/campusFeeds";
 
 const EMPTY_MAP = new Map();
 const CampusView = lazy(() => import("@/components/SmartPark/CampusView"));
@@ -159,42 +159,81 @@ export default function Home() {
   const activeFeed = feeds.find((f) => f.id === activeFeedId) || null;
   const [showInside, setShowInside] = useState(null);
   const [camHost] = useState(() => { const d = document.createElement("div"); d.className = "flex min-h-[70vh] flex-1 flex-col"; return d; }); // { id, nonce }: open a lot's guide in the Staff view
+  // Setting up a lot's feed, in steps: "aerial" (a satellite / aerial picture
+  // of the lot, its spaces mapped: the lot's 3D animation), "camera" (the
+  // lot's camera, its spaces mapped), then "link" (4+ matching ground points:
+  // the camera's readings land on the satellite picture's spaces).
+  const [aerialUrl, setAerialUrl] = useState(null);
+  const frameBlob = useCallback(async () => {
+    try { return frame?.url ? await (await fetch(frame.url)).blob() : await loadPhoto(); } catch { return null; }
+  }, [frame]);
+  const resetCamera = (cal = EMPTY_CALIBRATION, blob = null) => {
+    setCalibrationState(normalizeCalibration(cal));
+    setOpenPicture(blob ? { blob, nonce: Date.now() } : { stop: true, nonce: Date.now() });
+  };
   const addFeed = useCallback((osm, lot) => {
-    setFeedSetup(newFeed(osm, lot));
+    setFeedSetup({ ...newFeed(osm, lot), stage: "aerial" });
     setActiveFeedId(null);
-    setCalibrationState(normalizeCalibration(EMPTY_CALIBRATION));
-    setOpenPicture({ stop: true, nonce: Date.now() });
+    resetCamera({ ...EMPTY_CALIBRATION, view: "overhead" });
   }, []);
   const openFeed = useCallback(async (feed) => {
-    setFeedSetup(feed);
     setActiveFeedId(null);
-    setCalibrationState(normalizeCalibration(feed.calibration || EMPTY_CALIBRATION));
-    const blob = await feedPictures.load(feed.id);
-    setOpenPicture(blob ? { blob, nonce: Date.now() } : { stop: true, nonce: Date.now() });
+    if (feed.camera) {
+      setFeedSetup({ ...feed, stage: "camera", aerialCal: feed.calibration });
+      resetCamera(feed.camera.calibration, await feedPictures.load(`${feed.id}:camera`));
+    } else {
+      setFeedSetup({ ...feed, stage: "camera" });
+      resetCamera(feed.calibration || EMPTY_CALIBRATION, await feedPictures.load(feed.id));
+    }
   }, []);
+  // Step 1 done: keep the satellite picture and its spaces; on to the camera.
+  const aerialDone = useCallback(async () => {
+    const f = feedSetup;
+    const blob = await frameBlob();
+    if (blob) await feedPictures.save(f.id, blob);
+    setFeedSetup({ ...f, stage: "camera", aerialCal: calibration });
+    resetCamera();
+  }, [feedSetup, calibration, frameBlob]);
+  const skipAerial = useCallback(() => { setFeedSetup((f) => ({ ...f, stage: "camera", aerialCal: null })); resetCamera(); }, []);
+  // Step 2 done: with a satellite picture, match the camera to it; else save.
   const saveFeedSetup = useCallback(async () => {
     const f = feedSetup;
     if (!f) return;
+    const blob = await frameBlob();
+    if (f.aerialCal) {
+      if (blob) await feedPictures.save(`${f.id}:camera`, blob);
+      const aerialBlob = await feedPictures.load(f.id);
+      setAerialUrl((old) => { if (old) URL.revokeObjectURL(old); return aerialBlob ? URL.createObjectURL(aerialBlob) : null; });
+      setFeedSetup({ ...f, stage: "link", cameraCal: calibration });
+      return;
+    }
     const live = liveRef.current;
     const reading = live.statuses?.size ? readingFrom(calibration, live.statuses) : f.reading;
-    const saved = { ...f, calibration, reading, updatedAt: new Date().toISOString() };
-    setFeeds((prev) => [...prev.filter((x) => x.id !== f.id), saved]);
-    // The picture the lot was mapped on, to come back to it later.
-    try {
-      const blob = frame?.url ? await (await fetch(frame.url)).blob() : await loadPhoto();
-      if (blob) await feedPictures.save(f.id, blob);
-    } catch { /* the map still works without it */ }
+    const { stage, aerialCal, cameraCal, ...rest } = f; // eslint-disable-line no-unused-vars
+    setFeeds((prev) => [...prev.filter((x) => x.id !== f.id), { ...rest, calibration, reading, aerial: false, camera: null, updatedAt: new Date().toISOString() }]);
+    if (blob) await feedPictures.save(f.id, blob);
     setActiveFeedId(f.id);
     setFeedSetup(null);
-    // Show staff the lot as drivers will see it: its own guide screen.
     setShowInside({ id: f.id, nonce: Date.now() });
-  }, [feedSetup, calibration, frame, setFeeds]);
+  }, [feedSetup, calibration, frameBlob, setFeeds]);
+  // Step 3: the link saved; the feed is complete.
+  const saveFeedLink = useCallback((link) => {
+    const f = feedSetup;
+    const statuses = mapToAerial(f.aerialCal, f.cameraCal, link, liveRef.current.statuses);
+    const reading = readingFrom(f.aerialCal, statuses);
+    const { stage, aerialCal, cameraCal, ...rest } = f; // eslint-disable-line no-unused-vars
+    setFeeds((prev) => [...prev.filter((x) => x.id !== f.id), { ...rest, calibration: aerialCal, aerial: true, camera: { calibration: cameraCal, link }, reading, updatedAt: new Date().toISOString() }]);
+    setActiveFeedId(f.id);
+    setFeedSetup(null);
+    setShowInside({ id: f.id, nonce: Date.now() });
+  }, [feedSetup, setFeeds]);
   // Staff line a live lot's spaces up with the lot on the campus map.
   const placeFeed = useCallback((feed, placement) => setFeeds((prev) => prev.map((f) => (f.id === feed.id ? { ...f, placement } : f))), [setFeeds]);
   const removeFeed = useCallback((feed) => {
     if (!window.confirm(`Remove the live feed from ${feed.lotName || "this lot"}?`)) return;
     setFeeds((prev) => prev.filter((x) => x.id !== feed.id));
     feedPictures.remove(feed.id);
+    feedPictures.remove(`${feed.id}:camera`);
     setActiveFeedId((id) => (id === feed.id ? null : id));
   }, [setFeeds]);
   // While this camera runs as a feed, its readings go to that lot (every 2 s).
@@ -204,8 +243,12 @@ export default function Home() {
     const now = Date.now();
     if (now - lastFeedWrite.current < 2000) return;
     lastFeedWrite.current = now;
-    const reading = readingFrom(calibration, live.statuses, now);
-    setFeeds((prev) => prev.map((f) => (f.id === activeFeedId ? { ...f, calibration, reading } : f)));
+    setFeeds((prev) => prev.map((f) => {
+      if (f.id !== activeFeedId) return f;
+      // With a satellite picture, the camera's readings land on its spaces.
+      if (f.camera) return { ...f, camera: { ...f.camera, calibration }, reading: readingFrom(f.calibration, mapToAerial(f.calibration, calibration, f.camera.link, live.statuses), now) };
+      return { ...f, calibration, reading: readingFrom(calibration, live.statuses, now) };
+    }));
   }, [live, activeFeedId, feedSetup, calibration, setFeeds]);
 
   const onLiveUpdate = useCallback((raw) => {
@@ -411,12 +454,25 @@ export default function Home() {
         )}
       </main>
 
+      {feedSetup?.stage === "link" && frame && aerialUrl && (
+        <CameraLinkDialog
+          cameraUrl={frame.url}
+          siteUrl={aerialUrl}
+          cameraStalls={feedSetup.cameraCal?.stalls || []}
+          otherStalls={feedSetup.aerialCal?.stalls || []}
+          initial={feedSetup.camera?.link}
+          cameraAspect={frame.width / frame.height}
+          onClose={() => setFeedSetup((f) => ({ ...f, stage: "camera" }))}
+          onSave={saveFeedLink}
+        />
+      )}
       {(tab === "campus" || tab === "staff") && (
         <main className="flex flex-1 flex-col">
           <Suspense fallback={<p className="p-6 text-sm text-neutral-400">Loading 3D…</p>}>
             <CampusView mode={tab === "staff" ? "staff" : "user"} feeds={feeds} activeFeedId={activeFeedId}
               onAddFeed={addFeed} onOpenFeed={openFeed} onRemoveFeed={removeFeed}
               feedSetup={feedSetup} setupSpaces={calibration.stalls.length} onSaveFeed={saveFeedSetup} onCancelFeed={() => setFeedSetup(null)}
+              onAerialDone={aerialDone} onSkipAerial={skipAerial}
               cameraSlot={<CameraSlot host={camHost} active={Boolean(feedSetup) && tab === "staff"} className="flex min-h-[640px] flex-col" />}
               showInside={showInside} onPlaceFeed={placeFeed} />
           </Suspense>

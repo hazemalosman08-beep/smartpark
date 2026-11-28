@@ -24,3 +24,17 @@ test("feeds become the lots' occupancy for their place only; old readings are st
   assert.equal(occ.get("way/1").stale, false);
   assert.equal(feedOccupancy([f1], placeKey(osm), 1000 + READING_MAX_AGE_MS + 1).get("way/1").stale, true);
 });
+
+test("camera spaces carried onto the satellite picture's spaces through the link", async () => {
+  const { mapToAerial } = await import("../../src/lib/campusFeeds.js");
+  const sq = (id, x, y) => ({ id, poly: [{ x, y }, { x: x + 4, y }, { x: x + 4, y: y + 8 }, { x, y: y + 8 }] });
+  const aerial = { stalls: [sq("s1", 10, 10), sq("s2", 14, 10), sq("s3", 18, 10)] };
+  // Camera picture = satellite picture shifted by (+50, +20).
+  const camera = { stalls: [sq("c1", 60, 30), sq("c2", 64, 30)] };
+  const link = { H: [1, 0, -50, 0, 1, -20, 0, 0, 1] };
+  const st = new Map([["c1", { status: "occupied" }], ["c2", { status: "free" }]]);
+  const m = mapToAerial(aerial, camera, link, st);
+  assert.equal(m.get("s1").status, "occupied");
+  assert.equal(m.get("s2").status, "free");
+  assert.equal(m.has("s3"), false, "no camera space lands there: unknown");
+});

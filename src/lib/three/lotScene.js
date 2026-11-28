@@ -49,6 +49,7 @@ export class LotScene {
     this.canvas = canvas;
     this.onProgress = onProgress;
     this.embedded = Boolean(embedded);
+    this.labelK = embedded ? 0.45 : 1; // labels sized for a whole campus map when embedded
     const small = Math.min(window.innerWidth, window.innerHeight) < 700;
     if (embedded) {
       this.renderer = embedded;
@@ -381,7 +382,7 @@ export class LotScene {
     dot.position.set(base.x, 0.06, base.z);
     const label = makeLabel(text, { bg, fg });
     label.sprite.position.set(base.x, height + 0.9, base.z);
-    label.sprite.scale.set(label.aspect * LABEL, LABEL, 1);
+    label.sprite.scale.set(label.aspect * LABEL * this.labelK, LABEL * this.labelK, 1);
     this.groups.labels.add(pole, dot, label.sprite);
   }
 
@@ -468,7 +469,7 @@ export class LotScene {
     tip.position.y = 0.45;
     const label = makeLabel(target.label, { bg: "#22c55e", fg: "#052e16", bold: true });
     label.sprite.position.y = 2.2;
-    label.sprite.scale.set(label.aspect * LABEL * 1.25, LABEL * 1.25, 1);
+    label.sprite.scale.set(label.aspect * LABEL * 1.25 * this.labelK, LABEL * 1.25 * this.labelK, 1);
     pin.add(head, tip, label.sprite);
     pin.position.set(c.x, 1.6, c.z);
     const ring = new THREE.Mesh(new THREE.RingGeometry(0.9, 1.15, 40), new THREE.MeshBasicMaterial({ color: t.target, transparent: true, depthWrite: false, side: THREE.DoubleSide }));

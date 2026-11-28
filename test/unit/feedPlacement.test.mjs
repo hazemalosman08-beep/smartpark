@@ -34,3 +34,12 @@ test("point to polygon", () => {
   assert.equal(o.d, 3);
   assert.deepEqual(o.at, { x: 10, y: 5 });
 });
+
+test("a satellite picture of the lot fills the lot's outline exactly", async () => {
+  const { placementFor, toCampus } = await import("../../src/lib/feedPlacement.js");
+  const lot = [{ x: 100, y: 0 }, { x: 120, y: 0 }, { x: 120, y: 60 }, { x: 100, y: 60 }]; // 20 x 60 m, long north-south
+  const pl = placementFor([], lot, {}, { fill: { w: 300, h: 100 } }); // picture 300 x 100 (wide)
+  const corners = [{ x: 0, y: 0 }, { x: 300, y: 0 }, { x: 300, y: 100 }, { x: 0, y: 100 }].map((p) => toCampus(p, pl));
+  const xs = corners.map((p) => Math.round(p.x)), ys = corners.map((p) => Math.round(p.y));
+  assert.deepEqual([Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)], [100, 120, 0, 60]);
+});

@@ -680,10 +680,11 @@ export class CampusScene {
     sc.setRoute(g.route || [], g.target || null, { live: false });
     // Plan (lot units x m metres inside the scene) -> campus metres.
     const pl = g.placement, m = sc.m || 1, k = pl.scale / m;
+    const kx = (pl.sx ?? pl.scale) / m, kz = (pl.sy ?? pl.scale) / m;
     // A little above the map's flat surfaces (they are drawn pulled forward).
     gd.holder.position.set(pl.cx, 0.9, pl.cy);
     gd.holder.rotation.set(0, -pl.angle, 0);
-    gd.scaler.scale.set(pl.flip ? -k : k, k, k);
+    gd.scaler.scale.set(pl.flip ? -kx : kx, k, kz);
     sc.scene.position.set(-pl.pcx * m, 0, -pl.pcy * m);
   }
 

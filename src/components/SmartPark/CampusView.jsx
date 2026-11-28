@@ -166,7 +166,7 @@ const ago = (t) => { const s = Math.max(0, Math.round((Date.now() - t) / 1000));
 let visitOsm = null;
 
 export default function CampusView({ mode = "user", feeds = [], activeFeedId = null, onAddFeed, onOpenFeed, onRemoveFeed,
-  feedSetup = null, setupSpaces = 0, onSaveFeed, onCancelFeed, cameraSlot = null, showInside = null, onPlaceFeed }) {
+  feedSetup = null, setupSpaces = 0, onSaveFeed, onCancelFeed, cameraSlot = null, showInside = null, onPlaceFeed, onAerialDone, onSkipAerial }) {
   const staff = mode === "staff";
   const canvasRef = useRef(null);
   const engine = useRef(null);
@@ -337,7 +337,9 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
       if (!plan || plan.cal !== f.calibration) { plan = { cal: f.calibration, lot: deriveLot(normalizeCalibration(f.calibration)) }; plans.current.set(f.id, plan); }
       const stalls = plan.lot.stalls;
       if (!stalls.length) continue;
-      const pl = placementFor(stalls, lot.outer, f.placement || {});
+      const L = plan.lot;
+      const fill = f.aerial ? (L.rectified ? { w: L.width, h: L.height } : { w: 100 * (normalizeCalibration(f.calibration).aspect || 1.5), h: 100 }) : null;
+      const pl = placementFor(stalls, lot.outer, f.placement || {}, { fill });
       const stale = feedOcc.get(f.lotId)?.stale;
       const statuses = feedStatuses(f);
       out.push({
@@ -763,18 +765,33 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
                 <Video className="h-4 w-4 text-green-300" />
                 <p className="font-semibold">Live feed for {feedSetup.lotName || "this parking lot"} · {feedSetup.placeName}</p>
                 <div className="ml-auto flex items-center gap-2">
-                  <button onClick={onSaveFeed} disabled={!setupSpaces}
-                    className="rounded-md bg-green-500 px-3 py-1.5 text-xs font-semibold text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40">
-                    Save feed to lot{setupSpaces ? ` (${setupSpaces} spaces)` : ""}
-                  </button>
+                  {feedSetup.stage === "aerial" ? (
+                    <>
+                      <button onClick={onSkipAerial} className="rounded-md px-3 py-1.5 text-xs text-green-100 ring-1 ring-green-400/40 hover:bg-white/5">No satellite picture</button>
+                      <button onClick={onAerialDone} disabled={!setupSpaces}
+                        className="rounded-md bg-green-500 px-3 py-1.5 text-xs font-semibold text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40">
+                        Next: the lot&apos;s camera{setupSpaces ? ` (${setupSpaces} spaces)` : ""}
+                      </button>
+                    </>
+                  ) : (
+                    <button onClick={onSaveFeed} disabled={!setupSpaces}
+                      className="rounded-md bg-green-500 px-3 py-1.5 text-xs font-semibold text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40">
+                      {feedSetup.aerialCal ? "Next: match the camera to the satellite picture" : "Save feed to lot"}{setupSpaces ? ` (${setupSpaces} spaces)` : ""}
+                    </button>
+                  )}
                   <button onClick={onCancelFeed} className="rounded-md px-3 py-1.5 text-xs text-green-100 ring-1 ring-green-400/40 hover:bg-white/5">Cancel</button>
                 </div>
               </div>
-              <ol className="mt-1 flex flex-wrap gap-x-5 gap-y-0.5 text-xs text-green-100/75">
-                <li><b>1</b> Add the lot&apos;s camera: Webcam, Phone camera, or a photo / video file</li>
-                <li><b>2</b> Map the spaces: Find spaces automatically, or draw them; mark the Entrance and Building</li>
-                <li><b>3</b> Save: drivers see the lot&apos;s free spaces and its guide</li>
-              </ol>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+                {[["aerial", "1 Satellite picture"], ["camera", "2 Camera"], ["link", "3 Match them"]].map(([k, t]) => (
+                  <span key={k} className={`rounded-full px-2 py-0.5 ${feedSetup.stage === k ? "bg-green-500 font-semibold text-neutral-950" : "bg-white/5 text-green-100/60"}`}>{t}</span>
+                ))}
+              </div>
+              <p className="mt-1.5 text-xs text-green-100/80">
+                {feedSetup.stage === "aerial"
+                  ? <>Load a <b>satellite or aerial picture of this lot</b> (Photo / video file; a screenshot from a map works). Mark its <b>Lot corners</b> (More tools) so it fills the lot exactly, then <b>Find spaces automatically</b> and mark the <b>Entrance</b>. This picture becomes the lot&apos;s 3D animation.</>
+                  : <>Now the <b>lot&apos;s camera</b>: Webcam, Phone camera, or a photo / video of it. Map its spaces (Find spaces automatically, or draw them).{feedSetup.aerialCal ? " Next you click 4 matching points on the camera and the satellite picture, so the camera's readings land on the right spaces." : ""}</>}
+              </p>
             </section>
             <div className="p-3">{cameraSlot}</div>
           </div>

@@ -43,7 +43,10 @@ export function orientedRect(pts) {
  * Placement of a plan's stalls (each with poly) in a lot outline (metres),
  * with staff adjustments { rot (quarter turns), flip, size (x), dx, dy (m) }.
  */
-export function placementFor(stalls, lotOuter, adjust = {}) {
+export function placementFor(stalls, lotOuter, adjust = {}, { fill = null } = {}) {
+  // A satellite picture of the lot: its extent (the picture, or the lot
+  // corners marked on it) is stretched to fill the lot's outline exactly.
+  if (fill) return fillPlacement(fill, lotOuter, adjust);
   const pp = stalls.flatMap((s) => s.poly);
   const a = orientedRect(pp), b = orientedRect(lotOuter);
   // Real size from the spaces' widths (their short sides), capped to fit.
@@ -57,17 +60,31 @@ export function placementFor(stalls, lotOuter, adjust = {}) {
   const scale = Math.min(real, fit) * (adjust.size || 1);
   return {
     pcx: a.cx, pcy: a.cy, cx: b.cx + (adjust.dx || 0), cy: b.cy + (adjust.dy || 0),
-    angle: b.angle - a.angle + ((adjust.rot || 0) * Math.PI) / 2, scale, flip: Boolean(adjust.flip),
+    angle: b.angle - a.angle + ((adjust.rot || 0) * Math.PI) / 2, scale, sx: scale, sy: scale, flip: Boolean(adjust.flip),
+  };
+}
+
+/** fill: the plan box { w, h } (plan units, from 0,0) -> fills the lot's oriented rectangle. */
+function fillPlacement(fill, lotOuter, adjust) {
+  const b = orientedRect(lotOuter);
+  // Quarter turns from "plan x along the lot's long side".
+  const q = (((fill.w >= fill.h ? 0 : 1) + (adjust.rot || 0)) % 4 + 4) % 4;
+  const along = q % 2 === 0;
+  const k = adjust.size || 1;
+  const sx = ((along ? b.long : b.short) / fill.w) * k, sy = ((along ? b.short : b.long) / fill.h) * k;
+  return {
+    pcx: fill.w / 2, pcy: fill.h / 2, cx: b.cx + (adjust.dx || 0), cy: b.cy + (adjust.dy || 0),
+    angle: b.angle + (q * Math.PI) / 2, scale: Math.sqrt(sx * sy), sx, sy, flip: Boolean(adjust.flip),
   };
 }
 
 /** A plan point -> campus metres. */
 export function toCampus(p, pl) {
-  let x = p.x - pl.pcx;
-  const y = p.y - pl.pcy;
+  let x = (p.x - pl.pcx) * (pl.sx ?? pl.scale);
+  const y = (p.y - pl.pcy) * (pl.sy ?? pl.scale);
   if (pl.flip) x = -x;
   const c = Math.cos(pl.angle), s = Math.sin(pl.angle);
-  return { x: pl.cx + pl.scale * (x * c - y * s), y: pl.cy + pl.scale * (x * s + y * c) };
+  return { x: pl.cx + (x * c - y * s), y: pl.cy + (x * s + y * c) };
 }
 
 /** Distance from a point to a polygon (0 inside), and the closest point on it. */
