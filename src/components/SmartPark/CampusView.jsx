@@ -302,6 +302,7 @@ export default function CampusView() {
         )}
         <p className="absolute bottom-2 right-3 text-[11px] text-neutral-400">
           Map data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer" className="underline">{ATTRIBUTION}</a>
+          <span className="ml-2 text-neutral-600" title="App version">v {typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"}</span>
         </p>
       </section>
     </div>
