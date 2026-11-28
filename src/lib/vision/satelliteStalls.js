@@ -207,6 +207,25 @@ function findInRotation(R, W, H, { minP, maxP }) {
       stalls.push({ x0: x0 + peaks[i], x1: x0 + peaks[i + 1], y0: row.y0, y1: row.y1, front: row.front });
     }
   }
+  // Real rows are long runs of spaces; short clusters are texture (trees,
+  // kerbs, cracks): a row keeps runs of at least 5 spaces side by side.
+  {
+    const byRow = new Map();
+    for (const st of stalls) { const k = `${st.y0}|${st.y1}|${st.front}`; if (!byRow.has(k)) byRow.set(k, []); byRow.get(k).push(st); }
+    const keep = [];
+    for (const list of byRow.values()) {
+      list.sort((a, b) => a.x0 - b.x0);
+      let run = [list[0]];
+      const flush = () => { if (run.length >= 5) keep.push(...run); };
+      for (let i = 1; i < list.length; i += 1) {
+        if (list[i].x0 - run[run.length - 1].x1 <= 1) run.push(list[i]);
+        else { flush(); run = [list[i]]; }
+      }
+      flush();
+    }
+    stalls.length = 0;
+    stalls.push(...keep);
+  }
   // Two rows over the same ground: the spaces of the one found first stay.
   const kept = [];
   for (const st of stalls) {
@@ -225,7 +244,50 @@ function findInRotation(R, W, H, { minP, maxP }) {
  * pixels: { data (RGBA), width, height }. Returns { stalls: [{ poly, row, index }], spacing }.
  * minSpace / maxSpace: space width range in pixels.
  */
-export function findSatelliteStalls(pixels, { minSpace = 4, maxSpace = 40 } = {}) {
+export function findSatelliteStalls(pixels, opts = {}) {
+  // The same lot can come as a small screenshot or a big image: try a few
+  // sizes and keep the one with the most spaces in long regular rows.
+  let best = null;
+  for (const f of [1, 1 / 1.5, 1 / 2, 1 / 3]) {
+    const w = Math.round(pixels.width * f), h = Math.round(pixels.height * f);
+    if (f < 1 && Math.min(w, h) < 180) break;
+    const res = findAtScale(f === 1 ? pixels : shrink(pixels, w, h), opts);
+    if (!best || res.stalls.length > best.stalls.length) best = res;
+  }
+  return best;
+}
+
+// The middle of a space looks like pavement: grey (low colour saturation)
+// and neither black (picture borders, shadows) nor dark green (trees).
+function onPavement({ data, width, height }, poly) {
+  const cx = poly.reduce((a, p) => a + p.x, 0) / 4, cy = poly.reduce((a, p) => a + p.y, 0) / 4;
+  const rx = Math.max(1, Math.abs(poly[1].x - poly[0].x) / 4 + Math.abs(poly[1].y - poly[0].y) / 4);
+  let sat = 0, lum = 0, n = 0;
+  for (let dy = -rx; dy <= rx; dy += 1) for (let dx = -rx; dx <= rx; dx += 1) {
+    const x = Math.round(cx + dx), y = Math.round(cy + dy);
+    if (x < 0 || y < 0 || x >= width || y >= height) continue;
+    const i = (y * width + x) * 4, r = data[i], g = data[i + 1], b = data[i + 2];
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    sat += mx ? (mx - mn) / mx : 0; lum += (r + g + b) / 3; n += 1;
+  }
+  if (!n) return false;
+  return sat / n < 0.22 && lum / n > 60;
+}
+
+// Box-filtered smaller copy of an RGBA picture.
+function shrink({ data, width, height }, w, h) {
+  const out = new Uint8ClampedArray(w * h * 4);
+  const kx = width / w, ky = height / h;
+  for (let y = 0; y < h; y += 1) for (let x = 0; x < w; x += 1) {
+    const x0 = Math.floor(x * kx), x1 = Math.max(x0 + 1, Math.floor((x + 1) * kx)), y0 = Math.floor(y * ky), y1 = Math.max(y0 + 1, Math.floor((y + 1) * ky));
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let yy = y0; yy < y1 && yy < height; yy += 1) for (let xx = x0; xx < x1 && xx < width; xx += 1) { const i = (yy * width + xx) * 4; r += data[i]; g += data[i + 1]; b += data[i + 2]; n += 1; }
+    out.set([r / n, g / n, b / n, 255], (y * w + x) * 4);
+  }
+  return { data: out, width: w, height: h };
+}
+
+function findAtScale(pixels, { minSpace = 5, maxSpace = 40 } = {}) {
   const { width: w, height: h } = pixels;
   const g = grayOf(pixels);
   const bg = boxBlur(g, w, h, Math.max(2, Math.round(Math.min(w, h) / 120)));
@@ -254,6 +316,8 @@ export function findSatelliteStalls(pixels, { minSpace = 4, maxSpace = 40 } = {}
     // Front edge (aisle side) first: FL, FR, BR, BL.
     const poly = s.front === "top" ? [tl, tr, br, bl] : [br, bl, tl, tr];
     if (poly.some((p) => p.x < -1 || p.y < -1 || p.x > w + 1 || p.y > h + 1)) continue;
+    // On pavement: grey (not green/brown vegetation), not black (borders).
+    if (!onPavement(pixels, poly)) continue;
     stalls.push({ poly: poly.map(pct), row: row.letter, index: row.n });
   }
   return { stalls, spacing: found.P };

@@ -19,6 +19,7 @@ import { cameraLotToSiteLot } from "@/lib/vision/siteLink";
 import { areaCounts, complexStatuses, complexCalibration, loadComplex, newCamera, saveComplex } from "@/lib/complex";
 import { loadPhoto, savePhoto } from "@/lib/photoStore";
 import { CameraLinkDialog, ComplexBar } from "@/components/SmartPark/SitePanel";
+import FeedMatch from "@/components/SmartPark/FeedMatch";
 import { feedPictures, loadFeeds, mapToAerial, newFeed, readingFrom, saveFeeds } from "@/lib/campusFeeds";
 
 const EMPTY_MAP = new Map();
@@ -454,6 +455,10 @@ export default function Home() {
       </main>
 
       {feedSetup?.stage === "link" && frame && aerialUrl && (
+        <FeedMatch cameraUrl={frame.url} aerialUrl={aerialUrl} cameraCal={feedSetup.cameraCal} aerialCal={feedSetup.aerialCal}
+          onSave={saveFeedLink} onBack={() => setFeedSetup((f) => ({ ...f, stage: "camera" }))} onManual={() => setFeedSetup((f) => ({ ...f, stage: "link4" }))} />
+      )}
+      {feedSetup?.stage === "link4" && frame && aerialUrl && (
         <CameraLinkDialog
           cameraUrl={frame.url}
           siteUrl={aerialUrl}
@@ -461,7 +466,7 @@ export default function Home() {
           otherStalls={feedSetup.aerialCal?.stalls || []}
           initial={feedSetup.camera?.link}
           cameraAspect={frame.width / frame.height}
-          onClose={() => setFeedSetup((f) => ({ ...f, stage: "camera" }))}
+          onClose={() => setFeedSetup((f) => ({ ...f, stage: "link" }))}
           onSave={saveFeedLink}
         />
       )}
