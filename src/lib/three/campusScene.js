@@ -5,24 +5,32 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { extrude, makeLabel, ribbon } from "./lotScene.js";
+import { extrude, ribbon } from "./lotScene.js";
 
+// Map-app palettes. "site" is the complex's own buildings; "around" the
+// neighbourhood (drawn closer to the ground colour so the complex stands out).
 const THEMES = {
   dark: {
-    bg: 0x0b1117, ground: 0x18212a, grass: 0x1f4a33, wood: 0x173b29, pitch: 0x245a3a, water: 0x1d4f7a,
-    road: 0x2c3640, roadEdge: 0x48525d, path: 0x3a4550, rail: 0x55606b,
-    lot: 0x323d48, lotEdge: 0x94a3b8, garage: 0x55606d, garageRoof: 0x6b7785,
-    wall: 0x3a4655, roof: 0x4a5869, edge: 0x8ea0b5, tree: 0x2f7a4c, trunk: 0x4b3a2a,
-    hemi: [0xbfd4ff, 0x1a1f24, 1.0], sun: 1.1, lotLabel: "#0ea5e9",
+    bg: 0x0c1218, ground: 0x151c24, grass: 0x18301f, wood: 0x15291c, pitch: 0x1b3a26, water: 0x123150,
+    road: 0x2b3540, roadMajor: 0x3d4855, roadEdge: 0x10161c, path: 0x26303a, rail: 0x4a5561,
+    lot: 0x163352, lotEdge: 0x3b82c4, garage: 0x1d4f80, garageRoof: 0x2a6aa6,
+    siteRoof: 0x6a7c92, siteWall: 0x4b5a6d, aroundRoof: 0x2e3946, aroundWall: 0x232c37,
+    edge: 0x9fb2c8, tree: 0x24603b, trunk: 0x3d3022,
+    hemi: [0xcfe0ff, 0x10141a, 1.9], sun: 1.6,
+    lotLabel: "#1d70c2", buildingLabel: "rgba(15,23,32,0.82)", buildingText: "#dbe4ee", outline: 0xf59e0b,
   },
   light: {
-    bg: 0xeef2f6, ground: 0xe3e8ee, grass: 0xbfe3b4, wood: 0x9fd197, pitch: 0xa8dba0, water: 0x9cc9ef,
-    road: 0xffffff, roadEdge: 0xd0d6dd, path: 0xf6f1e7, rail: 0xb9bec4,
-    lot: 0xcfd5dc, lotEdge: 0x7b8794, garage: 0xc9ced4, garageRoof: 0xdfe3e8,
-    wall: 0xe9ecef, roof: 0xf6f7f8, edge: 0x9aa5b1, tree: 0x6fbf73, trunk: 0x8a6b4a,
-    hemi: [0xffffff, 0x9aa3ad, 1.0], sun: 0.9, lotLabel: "#0284c7",
+    bg: 0xe9edf1, ground: 0xe4e8ec, grass: 0xcde6c3, wood: 0xb8dbb0, pitch: 0xbfe0b5, water: 0xa9d1f2,
+    road: 0xffffff, roadMajor: 0xfff3c4, roadEdge: 0xcfd5dc, path: 0xf4efe6, rail: 0xb7bcc2,
+    lot: 0xd3e4f7, lotEdge: 0x5b9bd8, garage: 0x9cc3ea, garageRoof: 0xbcd7f2,
+    siteRoof: 0xfbfbfc, siteWall: 0xd5dbe3, aroundRoof: 0xeef0f3, aroundWall: 0xdfe3e8,
+    edge: 0x8d99a6, tree: 0x7cc27f, trunk: 0x8a6b4a,
+    hemi: [0xffffff, 0xaab3bd, 2.05], sun: 1.15,
+    lotLabel: "#1d70c2", buildingLabel: "rgba(255,255,255,0.9)", buildingText: "#1f2937", outline: 0xe08a00,
   },
 };
+
+const MAJOR = /^(motorway|trunk|primary|secondary|tertiary)(_link)?$/;
 
 export class CampusScene {
   constructor(canvas, { onPick = null } = {}) {
@@ -78,6 +86,7 @@ export class CampusScene {
         if (f.t >= 1) this.flight = null;
       }
       this.controls.update();
+      this.keepInside();
       if (t - (this.lastDeclutter || 0) > 150) { this.lastDeclutter = t; this.declutter(); }
       this.renderer.render(this.scene, this.camera);
     };
@@ -85,6 +94,22 @@ export class CampusScene {
   }
 
   stop() { this.running = false; cancelAnimationFrame(this.raf); }
+
+  // The view stays over the map (it fades out at its edge), and fine detail
+  // is dropped when zoomed far out.
+  keepInside() {
+    const R = this.radius;
+    if (!R) return;
+    const t = this.controls.target;
+    const d = Math.hypot(t.x, t.z);
+    if (d > R) {
+      const k = R / d, dx = t.x * k - t.x, dz = t.z * k - t.z;
+      t.x += dx; t.z += dz;
+      this.camera.position.x += dx; this.camera.position.z += dz;
+    }
+    const far = this.camera.position.distanceTo(t) > R * 1.4;
+    if (this.detail) for (const o of this.detail) o.visible = !far;
+  }
 
   resize(w, h) {
     if (!w || !h) return;
@@ -133,10 +158,11 @@ export class CampusScene {
       this.trip.add(new THREE.Mesh(geo, [mat(0xfbbf24, 0x3a2a00), mat(0xf59e0b, 0x2a1a00)]));
     }
     const bc = centre(b.outer);
-    const bl = makeLabel(b.name, { bg: "#f59e0b", fg: "#1c1917" });
+    const bl = mapLabel(b.name, { bg: "#f59e0b", fg: "#1c1917" });
     bl.sprite.position.set(bc.x, b.height + 10, bc.y);
-    bl.sprite.scale.set(bl.aspect * 0.03, 0.03, 1);
+    bl.sprite.scale.set(bl.aspect * 0.029, 0.029, 1);
     bl.sprite.renderOrder = 30;
+    bl.sprite.userData.rank = 3;
     this.trip.add(bl.sprite);
     (trip.options || []).forEach((o, i) => {
       const isChosen = o === trip.chosen;
@@ -153,10 +179,15 @@ export class CampusScene {
         if (g) this.trip.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: 0x22c55e, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 })));
       }
       const c = centre(lot.outer);
-      const label = makeLabel(`${i + 1}  ${lot.name || "Parking"} · ${o.walkMinutes} min walk`, { bg: isChosen ? "#16a34a" : "#166534", fg: "#fff" });
+      // The chosen lot is named; the other options are short numbered pins.
+      const label = isChosen
+        ? mapLabel(`${lot.name || "Parking"} · ${o.walkMinutes} min walk`, { bg: "#16a34a", fg: "#fff", badge: String(i + 1), badgeBg: "#ffffff", badgeFg: "#15803d" })
+        : mapLabel(`${o.walkMinutes} min`, { bg: "#14532d", fg: "#dcfce7", badge: String(i + 1), badgeBg: "#22c55e", badgeFg: "#052e16", weight: 600 });
+      const sc = isChosen ? 0.028 : 0.022;
       label.sprite.position.set(c.x, (garage?.height || 0) + (isChosen ? 12 : 8), c.y);
-      label.sprite.scale.set(label.aspect * (isChosen ? 0.028 : 0.022), isChosen ? 0.028 : 0.022, 1);
+      label.sprite.scale.set(label.aspect * sc, sc, 1);
       label.sprite.renderOrder = isChosen ? 29 : 25;
+      label.sprite.userData.rank = isChosen ? 2 : 1 - i / 10;
       label.sprite.userData.trip = o;
       this.trip.add(label.sprite);
     });
@@ -176,6 +207,7 @@ export class CampusScene {
       dots.renderOrder = 28;
       this.trip.add(dots);
     }
+    radialFog(this.trip);
     // Ordinary labels near the trip step aside.
     if (fly) {
       const pts = [...b.outer, ...(ch ? ch.lot.outer : [])];
@@ -192,9 +224,11 @@ export class CampusScene {
     if (this.osm) { this.build(); this.fitFog(); if (this.tripData) this.setTrip(this.tripData, { fly: false }); }
   }
 
+  // The fog fades the map out by distance from its centre (see radialFog),
+  // not from the camera: zoomed out, the complex sits on a soft round map
+  // instead of a hard-edged slab.
   fitFog() {
-    const d = this.camera.position.distanceTo(this.controls.target);
-    if (this.scene.fog) { this.scene.fog.near = Math.max(6000, d * 2.5); this.scene.fog.far = Math.max(20000, d * 6); }
+    if (this.scene.fog && this.radius) { this.scene.fog.near = this.radius * 0.8; this.scene.fog.far = this.radius * 1.25; }
   }
 
   setData(osm, { fit = true } = {}) {
@@ -208,14 +242,15 @@ export class CampusScene {
     const t = this.theme, osm = this.osm;
     if (!osm) return;
     this.scene.background = new THREE.Color(t.bg);
-    // Fog far beyond what is in view (set from the view distance in fit()).
-    this.scene.fog = new THREE.Fog(t.bg, 6000, 20000);
+    this.radius = this.mapRadius();
+    this.scene.fog = new THREE.Fog(t.bg, 1, 2);
+    this.fitFog();
+    this.detail = [];
     this.hemi.color.set(t.hemi[0]); this.hemi.groundColor.set(t.hemi[1]); this.hemi.intensity = t.hemi[2];
     this.sun.intensity = t.sun;
-    const box = this.extent();
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(box.w + 4000, box.h + 4000), new THREE.MeshBasicMaterial({ color: t.ground }));
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(this.radius * 3, 96), new THREE.MeshBasicMaterial({ color: t.ground }));
     ground.rotation.x = -Math.PI / 2;
-    ground.position.set(box.cx, -0.1, box.cz);
+    ground.position.set(0, -0.1, 0);
     this.root.add(ground);
 
     const flat = (polys, color, y, order) => {
@@ -245,17 +280,23 @@ export class CampusScene {
     };
     lines(osm.water.filter((w) => w.line), (w) => w.width, t.water, 0.05, 4);
     lines(osm.rails, 2.5, t.rail, 0.06, 5);
-    lines(osm.paths, 2.2, t.path, 0.07, 6);
-    lines(osm.roads, (r) => r.width + 1.2, t.roadEdge, 0.08, 7);
-    lines(osm.roads, (r) => r.width, t.road, 0.09, 8);
+    lines(osm.paths, 2, t.path, 0.07, 6);
+    lines(osm.roads, (r) => r.width + 1.6, t.roadEdge, 0.08, 7);
+    lines(osm.roads.filter((r) => !MAJOR.test(r.kind)), (r) => r.width, t.road, 0.09, 8);
+    lines(osm.roads.filter((r) => MAJOR.test(r.kind)), (r) => r.width, t.roadMajor, 0.095, 8);
 
     // Surface parking lots: flat, outlined, clickable.
     const lots = osm.parking.filter((p) => !p.space && !/multi|underground|rooftop/.test(p.kind));
     for (const lot of lots) {
       const mesh = flat([lot], t.lot, 0.12, 9);
       if (mesh) { mesh.userData.lot = lot; this.pickables.push(mesh); }
-      const pts = [...lot.outer, lot.outer[0]].map((p) => new THREE.Vector3(p.x, 0.2, p.y));
-      this.root.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: t.lotEdge })));
+    }
+    const rims = lots.map((lot) => ribbon([...lot.outer, lot.outer[0]].map((p) => new THREE.Vector2(p.x, p.y)), 1.2, 0.15)).filter(Boolean);
+    if (rims.length) {
+      const rim = new THREE.Mesh(mergeGeometries(rims.map((g) => { if (g.getAttribute("uv")) g.deleteAttribute("uv"); return g; })),
+        new THREE.MeshBasicMaterial({ color: t.lotEdge, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -10, polygonOffsetUnits: -10 }));
+      rim.renderOrder = 10;
+      this.root.add(rim);
     }
     const spaces = osm.parking.filter((p) => p.space);
     if (spaces.length) {
@@ -279,18 +320,19 @@ export class CampusScene {
       // Roofs and walls coloured per vertex, so all buildings are one mesh
       // (one draw call) whatever their count. Buildings outside the
       // complex's outline are faded towards the ground colour.
-      const roof = new THREE.Color(t.roof), wall = new THREE.Color(t.wall);
-      const ground = new THREE.Color(t.ground);
-      const fade = [roof.clone().lerp(ground, 0.55), wall.clone().lerp(ground, 0.55)];
-      const geo = mergeGeometries(ordinary.map((o) => paintGroups(o.geo, o.b.inComplex === false ? fade : [roof, wall])));
+      const site = [new THREE.Color(t.siteRoof), new THREE.Color(t.siteWall)];
+      const around = [new THREE.Color(t.aroundRoof), new THREE.Color(t.aroundWall)];
+      const geo = mergeGeometries(ordinary.map((o) => paintGroups(o.geo, o.b.inComplex === false ? around : site)));
       const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
       mesh.userData.buildings = true;
       this.pickables.push(mesh);
       this.root.add(mesh);
-      this.root.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 35), new THREE.LineBasicMaterial({ color: t.edge, transparent: true, opacity: 0.35 })));
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 35), new THREE.LineBasicMaterial({ color: t.edge, transparent: true, opacity: this.themeName === "dark" ? 0.22 : 0.35 }));
+      this.root.add(edges);
+      this.detail.push(edges);
     }
     for (const { geo, b } of garages) {
-      const mesh = new THREE.Mesh(geo, [new THREE.MeshLambertMaterial({ color: t.garageRoof }), new THREE.MeshLambertMaterial({ color: t.garage })]);
+      const mesh = new THREE.Mesh(paintGroups(geo, [new THREE.Color(t.garageRoof), new THREE.Color(t.garage)]), new THREE.MeshLambertMaterial({ vertexColors: true }));
       const lot = osm.parking.find((p) => p.name && p.name === b.name) || { name: b.name, kind: "multi-storey", outer: b.outer, capacity: null };
       mesh.userData.lot = lot;
       this.pickables.push(mesh);
@@ -320,13 +362,14 @@ export class CampusScene {
         m.compose(new THREE.Vector3(p.x, 3 + s * 0.7, p.y), new THREE.Quaternion(), new THREE.Vector3(s, s * 0.9, s)); crown.setMatrixAt(i, m);
       });
       this.root.add(trunk, crown);
+      this.detail.push(trunk, crown);
     }
 
     // The complex's outline on the ground.
     const rim = (osm.outline || []).map((o) => ribbon([...o.outer, o.outer[0]].map((p) => new THREE.Vector2(p.x, p.y)), 4, 0.3)).filter(Boolean);
     if (rim.length) {
       const mesh = new THREE.Mesh(mergeGeometries(rim.map((g) => { if (g.getAttribute("uv")) g.deleteAttribute("uv"); return g; })),
-        new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.85, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -12, polygonOffsetUnits: -12 }));
+        new THREE.MeshBasicMaterial({ color: t.outline, transparent: true, opacity: 0.9, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -12, polygonOffsetUnits: -12 }));
       mesh.renderOrder = 12;
       this.root.add(mesh);
     }
@@ -340,9 +383,9 @@ export class CampusScene {
     }
     for (const { b, area } of named.values()) {
       const c = centre(b.outer);
-      const label = makeLabel(b.name, { bg: this.themeName === "dark" ? "#1f2937" : "#ffffff", fg: this.themeName === "dark" ? "#e5e7eb" : "#1f2937" });
+      const label = mapLabel(b.name, { bg: t.buildingLabel, fg: t.buildingText, weight: 600 });
       label.sprite.position.set(c.x, b.height + 4, c.y);
-      label.sprite.scale.set(label.aspect * 0.019, 0.019, 1);
+      label.sprite.scale.set(label.aspect * 0.02, 0.02, 1);
       label.sprite.userData.building = b;
       label.sprite.userData.rank = -100000 + area;
       this.labels.add(label.sprite);
@@ -354,36 +397,52 @@ export class CampusScene {
       const c = centre(lot.outer);
       const garage = /multi|underground|rooftop/.test(lot.kind);
       const bld = garage ? osm.buildings.find((b) => b.garage && b.name === lot.name) : null;
-      const text = `P ${lot.name || (garage ? "Parking structure" : "Parking")}${lot.capacity ? ` · ${lot.capacity}` : ""}`;
-      const label = makeLabel(text, { bg: this.theme.lotLabel, fg: "#fff" });
+      const text = `${lot.name || (garage ? "Parking structure" : "Parking")}${lot.capacity ? `  ${lot.capacity}` : ""}`;
+      const label = mapLabel(text, { bg: t.lotLabel, fg: "#fff", badge: "P" });
       label.sprite.position.set(c.x, (bld?.height || 0) + 8, c.y);
       label.sprite.scale.set(label.aspect * 0.025, 0.025, 1);
       label.sprite.userData.lot = lot;
       label.sprite.userData.rank = (garage ? 2000 : 0) + (lot.capacity || 0);
       this.labels.add(label.sprite);
     }
+    radialFog(this.root);
+    radialFog(this.labels);
+  }
+
+  /** Radius (m) of the downloaded area around the map's origin (its centre). */
+  mapRadius() {
+    const b = this.osm?.bounds;
+    if (b && Number.isFinite(b.minlat)) {
+      const kx = 111320 * Math.cos((((b.minlat + b.maxlat) / 2) * Math.PI) / 180);
+      return Math.max(((b.maxlon - b.minlon) / 2) * kx, ((b.maxlat - b.minlat) / 2) * 110540) + 120;
+    }
+    const e = this.extent();
+    return Math.max(e.w, e.h) / 2 + Math.hypot(e.cx, e.cz);
   }
 
   // Labels that would overlap on screen are hidden; bigger lots and garages
   // win. Zooming in shows more of them.
   declutter() {
     const w = this.renderer.domElement.clientWidth, h = this.renderer.domElement.clientHeight;
-    if (!w || !h || !this.labels.children.length) return;
+    if (!w || !h || (!this.labels.children.length && !this.trip.children.length)) return;
     const placed = [];
     const v = new THREE.Vector3();
-    for (const sp of this.trip.children.filter((c) => c.isSprite)) {
-      v.copy(sp.position).project(this.camera);
-      const x = (v.x * 0.5 + 0.5) * w, y = (-v.y * 0.5 + 0.5) * h, lh = sp.scale.y * h, lw = sp.scale.x * h;
-      placed.push([x - lw / 2 - 4, y - lh / 2 - 3, x + lw / 2 + 4, y + lh / 2 + 3]);
-    }
-    const items = [...this.labels.children].sort((a, b) => (b.userData.rank || 0) - (a.userData.rank || 0));
+    const px = 1 / (2 * Math.tan((this.camera.fov * Math.PI) / 360));
+    // Trip labels first (the building and the chosen lot always show), then
+    // the map's own labels by rank.
+    const trip = this.trip.children.filter((c) => c.isSprite).sort((a, b) => (b.userData.rank || 0) - (a.userData.rank || 0));
+    const items = [...trip, ...[...this.labels.children].sort((a, b) => (b.userData.rank || 0) - (a.userData.rank || 0))];
     for (const sp of items) {
       v.copy(sp.position).project(this.camera);
       const x = (v.x * 0.5 + 0.5) * w, y = (-v.y * 0.5 + 0.5) * h;
-      const lh = sp.scale.y * h, lw = sp.scale.x * h;
-      const box = [x - lw / 2 - 4, y - lh / 2 - 3, x + lw / 2 + 4, y + lh / 2 + 3];
-      const onScreen = v.z < 1 && x > -lw && x < w + lw && y > -lh && y < h + lh;
-      const free = onScreen && !placed.some((q) => box[0] < q[2] && q[0] < box[2] && box[1] < q[3] && q[1] < box[3]);
+      // Screen size of a fixed-size sprite: scale / (2 tan(fov/2)) of the view height.
+      const lh = sp.scale.y * h * px, lw = sp.scale.x * h * px;
+      // Roomy spacing (a calm map), fully on screen, clear of the corner
+      // buttons and the attribution.
+      const box = [x - lw / 2 - 10, y - lh / 2 - 8, x + lw / 2 + 10, y + lh / 2 + 8];
+      const onScreen = v.z < 1 && x - lw / 2 > 4 && x + lw / 2 < w - 4 && y - lh / 2 > 4 && y + lh / 2 < h - 22 && !(x + lw / 2 > w - 100 && y - lh / 2 < 56);
+      const always = sp.parent === this.trip && (sp.userData.rank || 0) >= 2;
+      const free = always || (onScreen && !placed.some((q) => box[0] < q[2] && q[0] < box[2] && box[1] < q[3] && q[1] < box[3]));
       sp.visible = free;
       if (free) placed.push(box);
     }
@@ -398,13 +457,19 @@ export class CampusScene {
   }
 
   fit(snap = false) {
-    const b = this.extent();
-    // Far enough that the whole complex fits, seen tilted.
-    const dist = Math.max(b.w / Math.max(0.6, this.camera.aspect), b.h) * 1.4 + 60;
-    if (this.scene.fog) { this.scene.fog.near = dist * 2.5; this.scene.fog.far = dist * 6; }
-    this.camera.far = Math.max(20000, dist * 8);
+    // The complex itself when it has an outline, else the whole map.
+    const pts = (this.osm.outline || []).flatMap((o) => o.outer);
+    let cx = 0, cz = 0, w = this.radius * 1.5, h = this.radius * 1.5;
+    if (pts.length) {
+      const xs = pts.map((p) => p.x), zs = pts.map((p) => p.y);
+      cx = (Math.min(...xs) + Math.max(...xs)) / 2; cz = (Math.min(...zs) + Math.max(...zs)) / 2;
+      w = Math.min(w, Math.max(...xs) - Math.min(...xs) + 160); h = Math.min(h, Math.max(...zs) - Math.min(...zs) + 160);
+    }
+    const dist = Math.max(w / Math.max(0.6, this.camera.aspect), h) * 1.15 + 40;
+    this.controls.maxDistance = Math.max(400, this.radius * 3);
+    this.camera.far = Math.max(8000, this.radius * 12);
     this.camera.updateProjectionMatrix();
-    this.flyTo({ x: b.cx, z: b.cz }, Math.max(150, dist), snap);
+    this.flyTo({ x: cx, z: cz }, Math.max(150, dist), snap);
   }
 
   /** Fly to a point (metres), from `dist` away, tilted like a map app. */
@@ -442,19 +507,87 @@ export class CampusScene {
 }
 
 // Non-indexed extrusion with groups (0 caps, 1 sides) -> colour attribute.
+// Walls darken towards the ground (cheap ambient occlusion), so buildings
+// read as solid volumes rather than flat cut-outs.
 function paintGroups(geo, colors) {
   const g = geo.index ? geo.toNonIndexed() : geo;
-  const n = g.getAttribute("position").count;
+  const pos = g.getAttribute("position");
+  const n = pos.count;
+  let base = Infinity;
+  for (let i = 0; i < n; i += 1) base = Math.min(base, pos.getY(i));
   const col = new Float32Array(n * 3);
   const groups = g.groups.length ? g.groups : [{ start: 0, count: n, materialIndex: 0 }];
   for (const gr of groups) {
     const c = colors[gr.materialIndex] || colors[0];
-    for (let i = gr.start; i < Math.min(n, gr.start + gr.count); i += 1) col.set([c.r, c.g, c.b], i * 3);
+    for (let i = gr.start; i < Math.min(n, gr.start + gr.count); i += 1) {
+      const k = gr.materialIndex === 1 ? 0.6 + 0.4 * Math.min(1, (pos.getY(i) - base) / 14) : 1;
+      col.set([c.r * k, c.g * k, c.b * k], i * 3);
+    }
   }
   g.setAttribute("color", new THREE.BufferAttribute(col, 3));
   g.clearGroups();
   if (g.getAttribute("uv")) g.deleteAttribute("uv");
   return g;
+}
+
+// Fog by distance from the map's centre (the origin) instead of from the
+// camera: the map fades softly into the background at the edge of the
+// downloaded area, at any zoom.
+function radialFog(group) {
+  group.traverse((o) => {
+    const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of mats) {
+      if (m.userData.radialFog) continue;
+      m.userData.radialFog = true;
+      m.fog = true;
+      const sprite = m.isSpriteMaterial;
+      m.onBeforeCompile = (shader) => {
+        shader.vertexShader = shader.vertexShader.replace("#include <fog_vertex>", sprite
+          ? "#ifdef USE_FOG\n vFogDepth = length((modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xz);\n#endif"
+          : `#ifdef USE_FOG
+  vec4 rfWorld = vec4(transformed, 1.0);
+  #ifdef USE_INSTANCING
+    rfWorld = instanceMatrix * rfWorld;
+  #endif
+  vFogDepth = length((modelMatrix * rfWorld).xz);
+#endif`);
+      };
+      m.customProgramCacheKey = () => (sprite ? "radialFogSprite" : "radialFog");
+      m.needsUpdate = true;
+    }
+  });
+}
+
+// Map labels: a rounded pill, optionally with a round badge (P, 1, 2…).
+function mapLabel(text, { bg = "#0f172a", fg = "#fff", badge = "", badgeBg = "#ffffff", badgeFg = "#1d70c2", weight = 700 } = {}) {
+  const c = document.createElement("canvas");
+  const x = c.getContext("2d");
+  const H = 64, pad = 22, font = `${weight} 34px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif`;
+  x.font = font;
+  const bw = badge ? 46 : 0;
+  const w = Math.ceil(x.measureText(text).width) + pad * 2 + (badge ? bw + 4 : 0);
+  c.width = w + 8; c.height = H + 8;
+  x.font = font;
+  x.shadowColor = "rgba(0,0,0,0.35)"; x.shadowBlur = 6; x.shadowOffsetY = 2;
+  x.fillStyle = bg;
+  x.beginPath(); x.roundRect(4, 2, w, H, H / 2); x.fill();
+  x.shadowColor = "transparent";
+  if (badge) {
+    x.fillStyle = badgeBg;
+    x.beginPath(); x.arc(4 + 9 + bw / 2, 2 + H / 2, bw / 2, 0, Math.PI * 2); x.fill();
+    x.fillStyle = badgeFg; x.font = `800 30px ui-sans-serif, system-ui, sans-serif`;
+    x.textAlign = "center"; x.textBaseline = "middle";
+    x.fillText(badge, 4 + 9 + bw / 2, 2 + H / 2 + 1);
+    x.font = font;
+  }
+  x.fillStyle = fg; x.textAlign = "left"; x.textBaseline = "middle";
+  x.fillText(text, 4 + pad + (badge ? bw - 6 : 0), 2 + H / 2 + 1);
+  const texture = new THREE.CanvasTexture(c);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true, sizeAttenuation: false }));
+  sprite.renderOrder = 20;
+  return { sprite, texture, aspect: c.width / c.height };
 }
 
 function areaOf(p) {
