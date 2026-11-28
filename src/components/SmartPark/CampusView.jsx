@@ -1,7 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Building2, Car, Crosshair, FileUp, Footprints, Loader2, MapPin, Moon, Search, Sun, X } from "lucide-react";
+import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, MapPin, Moon, Search, Sun, X } from "lucide-react";
 import { ATTRIBUTION, buildingCounts, destinations, fetchArea, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
+import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
+
+// Closest parking; with occupancy data, full lots go to the end.
+function rankParking(osm, building, permit, occ) {
+  const all = nearestParking(osm, building, 8, { permit });
+  const full = (o) => occ?.get(o.lot.id)?.free === 0;
+  return [...all.filter((o) => !full(o)), ...all.filter(full)].slice(0, 5);
+}
+
+function FreeBadge({ o, className = "" }) {
+  if (!o) return null;
+  const level = occupancyLevel(o);
+  return <span className={`font-semibold tabular-nums ${className}`} style={{ color: LEVEL_COLOR[level] }}>{o.free ? `${o.free} free` : "Full"}</span>;
+}
 
 // A whole complex in 3D from OpenStreetMap: find it by name, see every
 // building, road and parking lot. (Occupancy from cameras comes on top later.)
@@ -30,6 +44,12 @@ export default function CampusView() {
   const [goOpen, setGoOpen] = useState(false);
   const [trip, setTrip] = useState(null); // { building, options, chosen }
   const [permit, setPermit] = useState(() => { try { return localStorage.getItem("smartpark.permit") === "1"; } catch { return false; } });
+  // Preview of live camera data with made-up numbers (clearly labelled).
+  const [simOn, setSimOn] = useState(false);
+  const [occ, setOcc] = useState(null); // Map lot id -> { free, total, estimated, trend }
+  const [occAt, setOccAt] = useState(0);
+  const occRef = useRef(null);
+  occRef.current = occ;
 
   useEffect(() => {
     const e = new CampusScene(canvasRef.current, { onPick: setPicked });
@@ -47,12 +67,30 @@ export default function CampusView() {
   // Changing the permit switch re-ranks the current trip.
   useEffect(() => {
     try { localStorage.setItem("smartpark.permit", permit ? "1" : "0"); } catch { /* blocked */ }
-    setTrip((t) => { if (!t || !osm) return t; const options = nearestParking(osm, t.building, 5, { permit }); return { ...t, options, chosen: options[0] || null }; });
-  }, [permit, osm]);
+    setTrip((t) => { if (!t || !osm) return t; const options = rankParking(osm, t.building, permit, occRef.current); return { ...t, options, chosen: options[0] || null }; });
+  }, [permit, osm, simOn]);
+  // The simulation: new numbers every few seconds while the preview is on.
+  useEffect(() => {
+    if (!simOn || !osm) { setOcc(null); return undefined; }
+    let seed = 7;
+    for (const ch of osm.name || "") seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+    const sim = createSimulation(osm, { seed });
+    const tick = () => { setOcc(sim.snapshot()); setOccAt(Date.now()); };
+    tick();
+    const id = setInterval(() => { sim.step(); tick(); }, 4000);
+    return () => clearInterval(id);
+  }, [simOn, osm]);
+  useEffect(() => { engine.current?.setOccupancy(occ); }, [occ]);
+  const occTotals = useMemo(() => {
+    if (!occ) return null;
+    let free = 0, total = 0, estimated = 0;
+    for (const o of occ.values()) { free += o.free; total += o.total; if (o.estimated) estimated += 1; }
+    return { free, total, estimated, lots: occ.size };
+  }, [occ]);
   const buildingsList = useMemo(() => (osm ? destinations(osm) : []), [osm]);
   const suggestions = useMemo(() => searchDestinations(buildingsList, goText), [buildingsList, goText]);
   const goTo = (building) => {
-    const options = nearestParking(osm, building, 5, { permit });
+    const options = rankParking(osm, building, permit, occRef.current);
     setTrip({ building, options, chosen: options[0] || null });
     setGoText(building.name);
     setGoOpen(false);
@@ -219,11 +257,12 @@ export default function CampusView() {
                       <span className="block text-[11px] text-neutral-400">
                         {/multi|underground/.test(o.lot.kind) ? "Garage" : "Surface lot"}{o.lot.capacity ? ` · ${o.lot.capacity} spaces` : ""}{o.private ? " · private" : o.permitOnly ? " · permit only" : o.customers ? " · customers only" : o.lot.access && !/^(yes|public)$/.test(o.lot.access) ? ` · ${o.lot.access}` : ""}{o.lot.fee === "yes" ? " · paid" : ""}
                       </span>
+                      {occ?.get(o.lot.id) && <FreeBadge o={occ.get(o.lot.id)} className="block text-xs" />}
                     </span>
                     <span className="shrink-0 text-right text-xs leading-tight text-amber-200"><Footprints className="ml-auto h-3.5 w-3.5" />{o.walkMinutes} min<br /><span className="text-neutral-500">{o.walkMeters} m</span></span>
                   </button>
                 ))}
-                <p className="pt-1 text-[11px] text-neutral-500">Ranked by walking distance (estimated). Free spaces appear here once the lots&apos; cameras are connected.</p>
+                <p className="pt-1 text-[11px] text-neutral-500">{occ ? "Ranked by walking distance; full lots last. Free spaces are SIMULATED (preview)." : "Ranked by walking distance (estimated). Free spaces appear here once the lots' cameras are connected."}</p>
               </div>
             )}
           </section>
@@ -237,23 +276,36 @@ export default function CampusView() {
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                 <Stat icon={Building2} value={counts.complex} label={counts.hasOutline ? `buildings (${counts.named} named)` : "buildings in view"} />
                 <Stat icon={Car} value={counts.hasOutline ? summary.onSite : summary.lots} label={counts.hasOutline ? `lots on site · ${summary.lots - summary.onSite} nearby` : `lots${summary.garages ? ` (${summary.garages} garages)` : ""}`} />
-                <Stat value={summary.capacity ? summary.capacity.toLocaleString() : "—"} label={summary.capacity ? `spaces in ${summary.withCapacity} lots` : "capacity unknown"} />
+                {occTotals
+                  ? <Stat icon={Activity} value={occTotals.free.toLocaleString()} label={`free of ${occTotals.total.toLocaleString()} (simulated)`} />
+                  : <Stat value={summary.capacity ? summary.capacity.toLocaleString() : "—"} label={summary.capacity ? `spaces in ${summary.withCapacity} lots` : "capacity unknown"} />}
               </div>
               <p className="mt-3 text-xs text-neutral-500">
                 {counts.hasOutline
                   ? `Buildings inside the site's outline (orange line). ${counts.around.toLocaleString()} more around it are shown lighter. `
                   : "OpenStreetMap has no outline for this place, so every building in view is counted. "}
-                Parking occupancy comes from the lot cameras (not connected yet).
+                {simOn ? "Free spaces below are made up, to preview how the lot cameras will look." : "Parking occupancy comes from the lot cameras (not connected yet)."}
               </p>
+              <button onClick={() => setSimOn((v) => !v)} role="switch" aria-checked={simOn}
+                className={`mt-3 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ring-1 transition ${simOn ? "bg-amber-400/10 text-amber-100 ring-amber-400/50" : "bg-white/[0.03] text-neutral-200 ring-white/10 hover:bg-white/[0.06]"}`}>
+                <span className={`relative h-5 w-9 shrink-0 rounded-full transition ${simOn ? "bg-amber-400" : "bg-neutral-600"}`}>
+                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${simOn ? "left-[18px]" : "left-0.5"}`} />
+                </span>
+                <span><span className="block font-semibold">Preview with cameras</span><span className="block text-[11px] text-neutral-400">Simulated free spaces, so you can see how it will work</span></span>
+              </button>
             </section>
             <section style={{ maxHeight: "max(240px, calc(100vh - 470px))" }} className="min-h-0 overflow-auto rounded-xl border border-neutral-800 bg-neutral-900/60 p-2">
               <p className="px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-neutral-500">Parking ({lots.length})</p>
               {lots.map((l) => (
                 <button key={l.id} onClick={() => { engine.current?.flyToLot(l); setPicked(l); }}
                   className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-white/5 ${picked?.id === l.id ? "bg-sky-500/15 text-sky-100" : "text-neutral-200"}`}>
-                  <span className="flex h-5 w-5 items-center justify-center rounded bg-sky-500 text-[11px] font-black text-white">P</span>
+                  <span className="flex h-5 w-5 items-center justify-center rounded text-[11px] font-black text-white" style={{ background: occ?.get(l.id) ? LEVEL_COLOR[occupancyLevel(occ.get(l.id))] : "#0ea5e9" }}>P</span>
                   <span className="truncate">{l.name || (/multi/.test(l.kind) ? "Parking structure" : "Unnamed lot")}</span>
-                  <span className="ml-auto shrink-0 text-xs text-neutral-500">{[l.inComplex === false && counts.hasOutline ? "nearby" : "", l.capacity ? `${l.capacity} sp.` : /multi/.test(l.kind) ? "garage" : ""].filter(Boolean).join(" · ")}</span>
+                  <span className="ml-auto shrink-0 text-xs text-neutral-500">
+                    {occ?.get(l.id)
+                      ? <><FreeBadge o={occ.get(l.id)} /><span className="text-neutral-500"> / {occ.get(l.id).total}</span></>
+                      : [l.inComplex === false && counts.hasOutline ? "nearby" : "", l.capacity ? `${l.capacity} sp.` : /multi/.test(l.kind) ? "garage" : ""].filter(Boolean).join(" · ")}
+                  </span>
                 </button>
               ))}
             </section>
@@ -278,6 +330,20 @@ export default function CampusView() {
           </div>
         )}
         <input ref={fileRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { openFile(e.target.files?.[0]); e.target.value = ""; }} />
+        {occ && (
+          <div className="pointer-events-none absolute left-3 top-3 max-w-[70%] rounded-xl bg-black/65 px-3 py-2 text-xs text-white ring-1 ring-amber-400/40 backdrop-blur">
+            <p className="flex items-center gap-2 font-semibold text-amber-200">
+              <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" /></span>
+              SIMULATED preview · not real camera data
+            </p>
+            <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-neutral-300">
+              <span><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ background: LEVEL_COLOR.plenty }} />Plenty</span>
+              <span><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ background: LEVEL_COLOR.filling }} />Filling up</span>
+              <span><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ background: LEVEL_COLOR.almost }} />Almost full / full</span>
+              <span className="text-neutral-500">updated {new Date(occAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+            </p>
+          </div>
+        )}
         {osm && (
           <div className="absolute right-3 top-3 flex gap-1.5">
             <button onClick={() => engine.current?.fit()} className="rounded-lg bg-black/55 p-2 text-neutral-200 ring-1 ring-white/10 backdrop-blur" title="Whole complex"><Crosshair className="h-4 w-4" /></button>
@@ -298,7 +364,17 @@ export default function CampusView() {
           <div className="absolute bottom-10 left-3 rounded-xl bg-black/70 px-4 py-3 text-sm text-white ring-1 ring-white/10 backdrop-blur">
             <p className="font-semibold">{picked.name || "Parking"}</p>
             <p className="text-xs text-neutral-300">{/multi/.test(picked.kind) ? "Parking structure" : "Surface lot"}{picked.capacity ? ` · ${picked.capacity} spaces` : ""}{picked.fee === "yes" ? " · paid" : ""}{picked.access && picked.access !== "yes" ? ` · ${picked.access}` : ""}</p>
-            <p className="mt-1 text-xs text-neutral-400">Free spaces: connect this lot&apos;s camera</p>
+            {occ?.get(picked.id) ? (() => {
+              const o = occ.get(picked.id);
+              const used = 1 - o.free / o.total;
+              return (
+                <div className="mt-2 w-56">
+                  <p className="flex items-baseline justify-between text-sm"><FreeBadge o={o} className="text-base" /><span className="text-xs text-neutral-400">of {o.total}{o.estimated ? " (size estimate)" : ""}</span></p>
+                  <div className="mt-1 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full transition-all duration-700" style={{ width: `${Math.round(used * 100)}%`, background: LEVEL_COLOR[occupancyLevel(o)] }} /></div>
+                  <p className="mt-1 text-[11px] text-amber-200/80">Simulated: {o.trend > 0 ? "filling up" : o.trend < 0 ? "emptying" : "steady"}</p>
+                </div>
+              );
+            })() : <p className="mt-1 text-xs text-neutral-400">Free spaces: connect this lot&apos;s camera</p>}
           </div>
         )}
         <p className="absolute bottom-2 right-3 text-[11px] text-neutral-400">

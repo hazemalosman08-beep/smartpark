@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { extrude, ribbon } from "./lotScene.js";
+import { LEVEL_COLOR, occupancyLevel } from "../occupancySim.js";
 
 // Map-app palettes. "site" is the complex's own buildings; "around" the
 // neighbourhood (drawn closer to the ground colour so the complex stands out).
@@ -167,7 +168,7 @@ export class CampusScene {
     (trip.options || []).forEach((o, i) => {
       const isChosen = o === trip.chosen;
       const lot = o.lot;
-      const fill = flatGeo(lot, 1.2);
+      const fill = isChosen || !this.occ ? flatGeo(lot, 1.2) : null;
       if (fill) {
         const m = new THREE.Mesh(fill, new THREE.MeshBasicMaterial({ color: isChosen ? 0x22c55e : 0x4ade80, transparent: true, opacity: isChosen ? 0.8 : 0.4, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -20, polygonOffsetUnits: -20 }));
         m.renderOrder = 20;
@@ -180,9 +181,11 @@ export class CampusScene {
       }
       const c = centre(lot.outer);
       // The chosen lot is named; the other options are short numbered pins.
+      const live = this.occ?.get(lot.id);
+      const free = live ? ` · ${live.free ? `${live.free} free` : "full"}` : "";
       const label = isChosen
-        ? mapLabel(`${lot.name || "Parking"} · ${o.walkMinutes} min walk`, { bg: "#16a34a", fg: "#fff", badge: String(i + 1), badgeBg: "#ffffff", badgeFg: "#15803d" })
-        : mapLabel(`${o.walkMinutes} min`, { bg: "#14532d", fg: "#dcfce7", badge: String(i + 1), badgeBg: "#22c55e", badgeFg: "#052e16", weight: 600 });
+        ? mapLabel(`${lot.name || "Parking"} · ${o.walkMinutes} min walk${free}`, { bg: "#16a34a", fg: "#fff", badge: String(i + 1), badgeBg: "#ffffff", badgeFg: "#15803d" })
+        : mapLabel(`${o.walkMinutes} min${free}`, { bg: "#14532d", fg: "#dcfce7", badge: String(i + 1), badgeBg: "#22c55e", badgeFg: "#052e16", weight: 600 });
       const sc = isChosen ? 0.028 : 0.022;
       label.sprite.position.set(c.x, (garage?.height || 0) + (isChosen ? 12 : 8), c.y);
       label.sprite.scale.set(label.aspect * sc, sc, 1);
@@ -287,9 +290,10 @@ export class CampusScene {
 
     // Surface parking lots: flat, outlined, clickable.
     const lots = osm.parking.filter((p) => !p.space && !/multi|underground|rooftop/.test(p.kind));
+    this.lotMesh = new Map();
     for (const lot of lots) {
       const mesh = flat([lot], t.lot, 0.12, 9);
-      if (mesh) { mesh.userData.lot = lot; this.pickables.push(mesh); }
+      if (mesh) { mesh.userData.lot = lot; this.pickables.push(mesh); this.lotMesh.set(lot.id, mesh); }
     }
     const rims = lots.map((lot) => ribbon([...lot.outer, lot.outer[0]].map((p) => new THREE.Vector2(p.x, p.y)), 1.2, 0.15)).filter(Boolean);
     if (rims.length) {
@@ -337,6 +341,18 @@ export class CampusScene {
       mesh.userData.lot = lot;
       this.pickables.push(mesh);
       this.root.add(mesh);
+      // Roof cap coloured by occupancy (hidden until there is data).
+      if (lot.id) {
+        const capGeo = flatGeo(b, b.height + 0.25);
+        if (capGeo) {
+          const cap = new THREE.Mesh(capGeo, new THREE.MeshBasicMaterial({ color: t.garageRoof, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 }));
+          cap.visible = false;
+          cap.userData.lot = lot;
+          cap.userData.cap = true;
+          this.root.add(cap);
+          this.lotMesh.set(lot.id, cap);
+        }
+      }
       // Floor lines on the sides: it reads as a parking structure.
       const floors = Math.max(1, Math.round(b.height / 3));
       const segs = [];
@@ -391,21 +407,66 @@ export class CampusScene {
       this.labels.add(label.sprite);
     }
 
-    // Labels: every parking lot and garage (P + name).
-    // Named lots and garages only: hundreds of "Parking" labels hide the map.
-    for (const lot of osm.parking.filter((p) => !p.space && p.name)) {
+    this.addLotLabels();
+    radialFog(this.root);
+    radialFog(this.labels);
+    if (this.occ) this.paintOccupancy();
+  }
+
+  // Parking labels: name (and capacity), or with occupancy data the free
+  // spaces, coloured green / amber / red. Named lots, plus unnamed ones big
+  // enough to matter when there is data.
+  addLotLabels() {
+    const t = this.theme, osm = this.osm, occ = this.occ;
+    for (const sp of [...this.labels.children]) {
+      if (!sp.userData.lot) continue;
+      this.labels.remove(sp);
+      sp.material.map?.dispose(); sp.material.dispose();
+    }
+    for (const lot of osm.parking) {
+      if (lot.space) continue;
+      const o = occ?.get(lot.id);
+      if (!lot.name && !(o && o.total >= 15)) continue;
       const c = centre(lot.outer);
       const garage = /multi|underground|rooftop/.test(lot.kind);
       const bld = garage ? osm.buildings.find((b) => b.garage && b.name === lot.name) : null;
-      const text = `${lot.name || (garage ? "Parking structure" : "Parking")}${lot.capacity ? `  ${lot.capacity}` : ""}`;
-      const label = mapLabel(text, { bg: t.lotLabel, fg: "#fff", badge: "P" });
+      const name = lot.name || (garage ? "Parking structure" : "Parking");
+      let label;
+      if (o) {
+        const level = occupancyLevel(o);
+        label = mapLabel(`${name}  ${o.free ? `${o.free} free` : "Full"}`, { bg: LEVEL_COLOR[level], fg: level === "filling" ? "#1c1917" : "#fff", badge: "P", badgeFg: LEVEL_COLOR[level] });
+      } else {
+        label = mapLabel(`${name}${lot.capacity ? `  ${lot.capacity}` : ""}`, { bg: t.lotLabel, fg: "#fff", badge: "P" });
+      }
       label.sprite.position.set(c.x, (bld?.height || 0) + 8, c.y);
       label.sprite.scale.set(label.aspect * 0.025, 0.025, 1);
       label.sprite.userData.lot = lot;
-      label.sprite.userData.rank = (garage ? 2000 : 0) + (lot.capacity || 0);
+      label.sprite.userData.rank = (garage ? 2000 : 0) + (lot.name ? 1000 : 0) + (o?.total || lot.capacity || 0);
       this.labels.add(label.sprite);
     }
-    radialFog(this.root);
+  }
+
+  /** Occupancy per lot (Map id -> { free, total }) or null: colours and labels. */
+  setOccupancy(occ) {
+    this.occ = occ;
+    if (!this.osm) return;
+    this.paintOccupancy();
+    if (this.tripData) this.setTrip(this.tripData, { fly: false });
+  }
+
+  paintOccupancy() {
+    const t = this.theme, occ = this.occ;
+    for (const [id, mesh] of this.lotMesh || []) {
+      const o = occ?.get(id);
+      if (mesh.userData.cap) {
+        mesh.visible = Boolean(o);
+        if (o) mesh.material.color.set(LEVEL_COLOR[occupancyLevel(o)]);
+        continue;
+      }
+      mesh.material.color.set(t.lot);
+      if (o) mesh.material.color.lerp(new THREE.Color(LEVEL_COLOR[occupancyLevel(o)]), this.themeName === "dark" ? 0.55 : 0.5);
+    }
+    this.addLotLabels();
     radialFog(this.labels);
   }
 
