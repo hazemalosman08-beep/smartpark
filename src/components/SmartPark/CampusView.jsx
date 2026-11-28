@@ -2,15 +2,18 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Building2, Car, Crosshair, FileUp, Footprints, Loader2, MapPin, Moon, Search, Sun, X } from "lucide-react";
 import { ATTRIBUTION, buildingCounts, destinations, fetchArea, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
-import { loadPhoto, savePhoto } from "@/lib/photoStore";
 
 // A whole complex in 3D from OpenStreetMap: find it by name, see every
 // building, road and parking lot. (Occupancy from cameras comes on top later.)
+// The complex stays while switching tabs, but not after the app is reloaded
+// or reopened (it then starts clean).
+let visitOsm = null;
+
 export default function CampusView() {
   const canvasRef = useRef(null);
   const engine = useRef(null);
   const fileRef = useRef(null);
-  const [query, setQuery] = useState("Wayne State University");
+  const [query, setQuery] = useState(() => visitOsm?.name || "");
   const [places, setPlaces] = useState([]); // suggestions while typing
   const [placesOpen, setPlacesOpen] = useState(false);
   const [placesBusy, setPlacesBusy] = useState(false);
@@ -18,7 +21,7 @@ export default function CampusView() {
   const typed = useRef(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [osm, setOsm] = useState(null);
+  const [osm, setOsm] = useState(() => visitOsm);
   const placesFor = useRef(""); // the text the shown suggestions are for
   const [picked, setPicked] = useState(null);
   const [theme, setTheme] = useState("dark");
@@ -36,8 +39,6 @@ export default function CampusView() {
     ro.observe(parent);
     e.resize(parent.clientWidth, parent.clientHeight);
     e.start();
-    // The last complex comes back after a reload.
-    loadPhoto("osm").then(async (blob) => { if (blob) { try { setOsm(JSON.parse(await blob.text())); } catch { /* ignore */ } } });
     return () => { ro.disconnect(); e.dispose(); };
   }, []);
   useEffect(() => { if (osm) { engine.current?.setData(osm); setTrip(null); setGoText(""); } }, [osm]);
@@ -59,7 +60,7 @@ export default function CampusView() {
   };
   useEffect(() => { engine.current?.setTheme(theme); }, [theme]);
 
-  const keep = (data) => { setOsm(data); setPicked(null); savePhoto(new Blob([JSON.stringify(data)], { type: "application/json" }), "osm"); };
+  const keep = (data) => { visitOsm = data; setOsm(data); setPicked(null); };
 
   // Suggestions as you type (after a short pause, newest answer wins).
   useEffect(() => {
@@ -130,7 +131,7 @@ export default function CampusView() {
 
   const summary = useMemo(() => (osm ? parkingSummary(osm) : null), [osm]);
   const counts = useMemo(() => (osm ? buildingCounts(osm) : null), [osm]);
-  const lots = useMemo(() => (osm ? osm.parking.filter((p) => !p.space).sort((a, b) => (!a.name - !b.name) || (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }) || (b.capacity || 0) - (a.capacity || 0)) : []), [osm]);
+  const lots = useMemo(() => (osm ? osm.parking.filter((p) => !p.space).sort((a, b) => ((a.inComplex === false) - (b.inComplex === false)) || (!a.name - !b.name) || (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }) || (b.capacity || 0) - (a.capacity || 0)) : []), [osm]);
 
   return (
     <div className="flex flex-1 flex-col gap-3 p-3 lg:flex-row lg:items-start lg:p-4">
@@ -235,7 +236,7 @@ export default function CampusView() {
               {osm.detail && <p className="text-xs text-neutral-400">{osm.detail}</p>}
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                 <Stat icon={Building2} value={counts.complex} label={counts.hasOutline ? `buildings (${counts.named} named)` : "buildings in view"} />
-                <Stat icon={Car} value={summary.lots} label={`lots${summary.garages ? ` (${summary.garages} garages)` : ""}`} />
+                <Stat icon={Car} value={counts.hasOutline ? summary.onSite : summary.lots} label={counts.hasOutline ? `lots on site · ${summary.lots - summary.onSite} nearby` : `lots${summary.garages ? ` (${summary.garages} garages)` : ""}`} />
                 <Stat value={summary.capacity ? summary.capacity.toLocaleString() : "—"} label={summary.capacity ? `spaces in ${summary.withCapacity} lots` : "capacity unknown"} />
               </div>
               <p className="mt-3 text-xs text-neutral-500">
@@ -252,7 +253,7 @@ export default function CampusView() {
                   className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-white/5 ${picked?.id === l.id ? "bg-sky-500/15 text-sky-100" : "text-neutral-200"}`}>
                   <span className="flex h-5 w-5 items-center justify-center rounded bg-sky-500 text-[11px] font-black text-white">P</span>
                   <span className="truncate">{l.name || (/multi/.test(l.kind) ? "Parking structure" : "Unnamed lot")}</span>
-                  <span className="ml-auto shrink-0 text-xs text-neutral-500">{l.capacity ? `${l.capacity} sp.` : /multi/.test(l.kind) ? "garage" : ""}</span>
+                  <span className="ml-auto shrink-0 text-xs text-neutral-500">{[l.inComplex === false && counts.hasOutline ? "nearby" : "", l.capacity ? `${l.capacity} sp.` : /multi/.test(l.kind) ? "garage" : ""].filter(Boolean).join(" · ")}</span>
                 </button>
               ))}
             </section>
@@ -269,7 +270,7 @@ export default function CampusView() {
             <button
               onClick={async () => {
                 setBusy("Loading the Wayne State demo…");
-                try { const r = await fetch(`${import.meta.env.BASE_URL || "/"}demo/wayne-state-osm.json`); await openFile(await r.blob(), "Wayne State University"); } catch { setError("Could not load the demo"); }
+                try { const r = await fetch(`${import.meta.env.BASE_URL || "/"}demo/wayne-state-osm.json`); await openFile(await r.blob(), "Wayne State University"); typed.current = false; setQuery("Wayne State University"); } catch { setError("Could not load the demo"); }
                 setBusy("");
               }}
               className="rounded-md border border-sky-400/50 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-500/10">Load the Wayne State demo</button>

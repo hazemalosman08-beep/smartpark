@@ -92,11 +92,14 @@ const US_STATES = {
 // Large places (a whole city) are cut to their middle: more would be too much
 // to download and draw. About 3 x 3 km.
 export const MAX_SPAN_M = 3000;
+export const MIN_SPAN_M = 600;
 export function limitBounds(b) {
   const lat = (b.minlat + b.maxlat) / 2, lon = (b.minlon + b.maxlon) / 2;
   const kx = 111320 * Math.cos((lat * Math.PI) / 180), ky = 111320;
-  const halfW = Math.min((b.maxlon - b.minlon) * kx, MAX_SPAN_M) / 2 / kx;
-  const halfH = Math.min((b.maxlat - b.minlat) * ky, MAX_SPAN_M) / 2 / ky;
+  // At least MIN_SPAN_M across, so a single building comes with its grounds
+  // and the parking around it.
+  const halfW = Math.max(MIN_SPAN_M, Math.min((b.maxlon - b.minlon) * kx, MAX_SPAN_M)) / 2 / kx;
+  const halfH = Math.max(MIN_SPAN_M, Math.min((b.maxlat - b.minlat) * ky, MAX_SPAN_M)) / 2 / ky;
   const limited = halfW * 2 * kx < (b.maxlon - b.minlon) * kx - 1 || halfH * 2 * ky < (b.maxlat - b.minlat) * ky - 1;
   return { bounds: { minlat: lat - halfH, maxlat: lat + halfH, minlon: lon - halfW, maxlon: lon + halfW }, limited };
 }
@@ -213,6 +216,9 @@ export async function fetchArea(bounds, { margin = 120, signal, onStatus, fresh 
   way["amenity"="parking_space"];
   way["highway"];
   way["leisure"~"^(park|garden|pitch|playground|track|sports_centre|stadium)$"];
+  way["amenity"~"^(university|college|school|hospital|clinic|place_of_worship|community_centre|townhall|library|arts_centre|theatre)$"];
+  relation["amenity"~"^(university|college|school|hospital)$"]["type"="multipolygon"];
+  way["landuse"~"^(religious|education|institutional)$"];
   way["landuse"~"^(grass|meadow|forest|recreation_ground|village_green|flowerbed)$"];
   way["natural"~"^(wood|scrub|grassland|water)$"]; way["water"]; way["waterway"];
   node["natural"="tree"];
@@ -342,8 +348,13 @@ export function parseOsm(data, bounds, { outline = null } = {}) {
     }
     return [];
   };
+  const sites = [];
   for (const e of data.elements || []) {
     const t = e.tags || {};
+    // Areas a place stands on (a mosque's grounds, a hospital's site).
+    if (e.type !== "node" && !t.building && (SITE_AMENITY.test(t.amenity || "") || SITE_LANDUSE.test(t.landuse || "") || t.leisure === "stadium")) {
+      for (const poly of polygons(e)) sites.push({ ...poly, name: t.name || "", area: Math.abs(polyArea(poly.outer)) });
+    }
     if (e.type === "node" && t.natural === "tree") { out.trees.push(P(e)); continue; }
     if (e.type === "node") { if (isNamedPoint(t)) points.push({ ...P(e), name: t.name }); continue; }
     if (t.building || t["building:part"]) {
@@ -380,16 +391,27 @@ export function parseOsm(data, bounds, { outline = null } = {}) {
       for (const poly of polygons(e)) out.water.push(poly);
       continue;
     }
-    if (t.leisure || t.landuse || t.natural) {
+    if (GREEN_LEISURE.test(t.leisure || "") || GREEN_LANDUSE.test(t.landuse || "") || GREEN_NATURAL.test(t.natural || "")) {
       const kind = t.natural === "wood" || t.landuse === "forest" ? "wood" : t.leisure === "pitch" || t.leisure === "track" ? "pitch" : "grass";
       for (const poly of polygons(e)) out.green.push({ ...poly, kind });
     }
   }
   // The complex's own outline: buildings inside it belong to the complex,
   // the rest is the neighbourhood around it. No outline: everything counts.
-  if (outline) out.outline = polygons(outline).filter((p) => p.outer.length >= 3);
+  let polys = outline ? polygons(outline).filter((p) => p.outer.length >= 3) : [];
+  // A single building (or a point) as the place: its site is the smallest
+  // mapped site area around it (a mosque's grounds with their parking).
+  if (!polys.length || outline?.tags?.building) {
+    const ref = polys.length ? interiorPoint(polys[0].outer) : { x: 0, y: 0 };
+    const own = polys.length ? Math.abs(polyArea(polys[0].outer)) : 0;
+    const site = sites.filter((st) => st.area > own * 1.5 && st.area < 9e6 && inside(ref, st.outer)).sort((a, b) => a.area - b.area)[0];
+    if (site) polys = [{ outer: site.outer, holes: site.holes }];
+  }
+  out.outline = polys;
   const inOutline = (pt) => out.outline.some((o) => inside(pt, o.outer) && !o.holes.some((h) => inside(pt, h)));
-  for (const b of out.buildings) b.inComplex = !out.outline.length || inOutline(centre(b.outer));
+  const outlineId = outline ? `${outline.type}/${outline.id}` : "";
+  for (const b of out.buildings) b.inComplex = !out.outline.length || b.id === outlineId || inOutline(interiorPoint(b.outer));
+  for (const p of out.parking) p.inComplex = !out.outline.length || inOutline(interiorPoint(p.outer));
   // Unnamed buildings: a named place inside them (a shop, an office, a
   // department mapped as a point) names them.
   for (const pt of points) {
@@ -401,6 +423,37 @@ export function parseOsm(data, bounds, { outline = null } = {}) {
   const typical = known.length >= 5 ? known[Math.floor(known.length / 2)] : 10.6;
   for (const b of out.buildings) if (b.height === null) b.height = b.garage ? 12 : typical;
   return out;
+}
+
+const SITE_AMENITY = /^(university|college|school|hospital|clinic|place_of_worship|community_centre|townhall|library|arts_centre|theatre)$/;
+const SITE_LANDUSE = /^(religious|education|institutional)$/;
+const GREEN_LEISURE = /^(park|garden|pitch|playground|track|sports_centre|stadium|golf_course|common|dog_park)$/;
+const GREEN_LANDUSE = /^(grass|meadow|forest|recreation_ground|village_green|flowerbed|cemetery)$/;
+const GREEN_NATURAL = /^(wood|scrub|grassland|heath)$/;
+
+/**
+ * A point inside a polygon (the centre of a U- or L-shaped building can be
+ * outside it): the area centroid if inside, else the middle of the widest
+ * stretch of the polygon along the centroid's row.
+ */
+export function interiorPoint(poly) {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < poly.length; i += 1) {
+    const p = poly[i], q = poly[(i + 1) % poly.length];
+    const f = p.x * q.y - q.x * p.y;
+    a += f; cx += (p.x + q.x) * f; cy += (p.y + q.y) * f;
+  }
+  const c = Math.abs(a) > 1e-9 ? { x: cx / (3 * a), y: cy / (3 * a) } : centre(poly);
+  if (inside(c, poly)) return c;
+  const xs = [];
+  for (let i = 0; i < poly.length; i += 1) {
+    const p = poly[i], q = poly[(i + 1) % poly.length];
+    if ((p.y > c.y) !== (q.y > c.y)) xs.push(p.x + ((c.y - p.y) * (q.x - p.x)) / (q.y - p.y));
+  }
+  xs.sort((u, v) => u - v);
+  let best = null;
+  for (let i = 0; i + 1 < xs.length; i += 2) if (!best || xs[i + 1] - xs[i] > best[1] - best[0]) best = [xs[i], xs[i + 1]];
+  return best ? { x: (best[0] + best[1]) / 2, y: c.y } : c;
 }
 
 // Points worth naming a building after.
@@ -477,7 +530,7 @@ export function parkingSummary(osm) {
   const lots = osm.parking.filter((p) => !p.space);
   const garages = lots.filter((p) => /multi|underground|rooftop/.test(p.kind));
   const capacity = lots.reduce((s, p) => s + (p.capacity || 0), 0);
-  return { lots: lots.length, garages: garages.length, surface: lots.length - garages.length, capacity, withCapacity: lots.filter((p) => p.capacity).length };
+  return { onSite: lots.filter((p) => p.inComplex !== false).length, lots: lots.length, garages: garages.length, surface: lots.length - garages.length, capacity, withCapacity: lots.filter((p) => p.capacity).length };
 }
 
 // ---------------------------------------------------------------------------

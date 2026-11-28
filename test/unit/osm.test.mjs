@@ -26,7 +26,7 @@ test("osm: parking lots and garages with names and capacity", () => {
   const garage = osm.parking.find((p) => p.name === "Structure 2");
   assert.equal(garage.kind, "multi-storey");
   assert.ok(osm.buildings.some((b) => b.garage && b.name === "Structure 2"), "a garage is also a building");
-  assert.deepEqual(parkingSummary(osm), { lots: 2, garages: 1, surface: 1, capacity: 920, withCapacity: 2 });
+  assert.deepEqual(parkingSummary(osm), { onSite: 2, lots: 2, garages: 1, surface: 1, capacity: 920, withCapacity: 2 });
 });
 
 test("osm: roads with widths, paths, green, water, trees", () => {
@@ -155,4 +155,37 @@ test("photon results keep the OSM object (for the outline)", async () => {
   const { photonToPlaces } = await import("../../src/lib/osm.js");
   const places = photonToPlaces(JSON.parse(fs.readFileSync(new URL("../fixtures/photon-henry-ford.json", import.meta.url))));
   assert.ok(places[0].osm && /^(way|relation|node)$/.test(places[0].osm.type) && places[0].osm.id > 0);
+});
+
+test("interiorPoint: inside a U-shaped building (its average corner is not)", async () => {
+  const { interiorPoint } = await import("../../src/lib/osm.js");
+  const U = [{ x: 0, y: 0 }, { x: 30, y: 0 }, { x: 30, y: 30 }, { x: 20, y: 30 }, { x: 20, y: 8 }, { x: 10, y: 8 }, { x: 10, y: 30 }, { x: 0, y: 30 }];
+  const p = interiorPoint(U);
+  const inU = (p.y < 8 && p.x > 0 && p.x < 30) || (p.y >= 8 && p.y < 30 && ((p.x > 0 && p.x < 10) || (p.x > 20 && p.x < 30)));
+  assert.ok(inU, JSON.stringify(p));
+});
+
+test("a single building as the place: its site area becomes the complex; only green land is green", async () => {
+  const { parseOsm, buildingCounts } = await import("../../src/lib/osm.js");
+  const sq = (lat, lon, d) => [{ lat, lon }, { lat, lon: lon + d }, { lat: lat + d, lon: lon + d }, { lat: lat + d, lon }, { lat, lon }];
+  const mosque = { type: "way", id: 7, tags: { building: "mosque", amenity: "place_of_worship", name: "Mosque" }, geometry: sq(41.9998, -83.0002, 0.0004) };
+  const data = { elements: [
+    mosque,
+    { type: "way", id: 8, tags: { landuse: "religious" }, geometry: sq(41.999, -83.001, 0.002) }, // the grounds
+    { type: "way", id: 9, tags: { building: "yes", name: "Hall" }, geometry: sq(42.0005, -82.9995, 0.0002) }, // on the grounds
+    { type: "way", id: 10, tags: { building: "house" }, geometry: sq(42.003, -82.997, 0.0002) }, // next door
+    { type: "way", id: 11, tags: { landuse: "residential" }, geometry: sq(41.99, -83.01, 0.02) },
+    { type: "way", id: 12, tags: { leisure: "park" }, geometry: sq(42.002, -83.003, 0.0005) },
+  ] };
+  const bounds = { minlat: 41.9998, maxlat: 42.0002, minlon: -83.0002, maxlon: -82.9998 };
+  const osm = parseOsm(data, bounds, { outline: mosque });
+  assert.deepEqual(buildingCounts(osm), { complex: 2, named: 2, around: 1, hasOutline: true });
+  assert.equal(osm.green.length, 1, "the park is green; residential and religious land are not");
+});
+
+test("limitBounds: a single building gets at least 600 m around it", async () => {
+  const { limitBounds } = await import("../../src/lib/osm.js");
+  const { bounds, limited } = limitBounds({ minlat: 42.4986, maxlat: 42.4993, minlon: -83.4018, maxlon: -83.4006 });
+  assert.equal(limited, false);
+  assert.ok(Math.abs((bounds.maxlat - bounds.minlat) * 111320 - 600) < 1);
 });
