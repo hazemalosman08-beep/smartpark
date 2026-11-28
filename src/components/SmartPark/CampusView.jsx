@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock, MapPin, Moon, Search, Sun, X } from "lucide-react";
-import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchMore, fetchOutline, mainOutlineBounds, toLatLon, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
+import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, fetchRaw, mainOutlineBounds, mergeOsm, tilesToLoad, toLatLon, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
 import { STATES, stateByCode } from "@/lib/usStates";
@@ -43,7 +43,6 @@ function TypePick({ label, options, value, onChange, placeholder, id }) {
 // A big place can be explored up to this size (around its own point);
 // more of it is loaded as the view moves.
 const MAX_EXPLORE_M = 12000;
-const LOAD_AROUND_M = 1500;
 
 function clampBox(b, maxM, centre) {
   const lat = (b.minlat + b.maxlat) / 2;
@@ -54,8 +53,6 @@ function clampBox(b, maxM, centre) {
   return { minlat: cl - hh, maxlat: cl + hh, minlon: co - hw, maxlon: co + hw };
 }
 
-const insideBox = (p, b) => p.lat >= b.minlat && p.lat <= b.maxlat && p.lon >= b.minlon && p.lon <= b.maxlon;
-const clip = (b, f) => ({ minlat: Math.max(b.minlat, f.minlat), maxlat: Math.min(b.maxlat, f.maxlat), minlon: Math.max(b.minlon, f.minlon), maxlon: Math.min(b.maxlon, f.maxlon) });
 
 // Farther than this (about 10 minutes on foot) is not a real recommendation.
 const FAR_WALK_M = 800;
@@ -151,26 +148,52 @@ export default function CampusView() {
     engine.current?.setData(osm); setTrip(null); setGoText("");
   }, [osm]);
   useEffect(() => {
-    let busyMore = false;
-    const onView = async (v) => {
+    // Tiles in view first (nearest to the centre), two downloads at a time;
+    // each is merged as soon as it arrives and the map redrawn at most once
+    // a second. Then a ring around the view is fetched quietly, so the next
+    // move is usually already there.
+    const st = { place: null, queue: [], inFlight: new Set(), done: new Set(), visible: new Set(), map: null, flushed: 0, timer: null };
+    const indicator = () => setLoadingMore([...st.inFlight, ...st.queue.map((q) => q.id)].some((id) => st.visible.has(id)));
+    const flush = () => {
+      st.timer = null;
+      st.flushed = Date.now();
+      if (!st.map || st.map === osmRef.current) return;
+      extending.current = true;
+      visitOsm = st.map;
+      setOsm(st.map);
+    };
+    const scheduleFlush = () => { if (!st.timer) st.timer = setTimeout(flush, Math.max(0, 1000 - (Date.now() - st.flushed))); };
+    const pump = () => {
+      while (st.inFlight.size < 2 && st.queue.length) {
+        const t = st.queue.shift();
+        if (st.done.has(t.id) || st.inFlight.has(t.id)) continue;
+        st.inFlight.add(t.id);
+        const place = st.place;
+        fetchRaw(t.box)
+          .then((data) => {
+            if (st.place !== place) return;
+            const base = st.map || osmRef.current;
+            st.map = mergeOsm(base, parseOsm(data, base.bounds), t.box);
+            st.done.add(t.id);
+            scheduleFlush();
+          })
+          .catch(() => { /* tried again on the next move */ })
+          .finally(() => { st.inFlight.delete(t.id); indicator(); pump(); });
+      }
+      indicator();
+    };
+    const onView = (v) => {
       const o = osmRef.current;
-      if (!o?.full || busyMore) return;
+      if (!o?.full) return;
+      if (st.place !== o.fetchedAt) Object.assign(st, { place: o.fetchedAt, queue: [], done: new Set(), map: null });
+      const base = st.map || o;
       const at = toLatLon(o.bounds, v.x, v.y);
-      const need = (m) => {
-        const dLat = m / 111320, dLon = m / (111320 * Math.cos((at.lat * Math.PI) / 180));
-        return clip({ minlat: at.lat - dLat, maxlat: at.lat + dLat, minlon: at.lon - dLon, maxlon: at.lon + dLon }, o.full);
-      };
-      const want = need(Math.min(LOAD_AROUND_M, Math.max(500, v.distance)));
-      const pts = [0, 0.5, 1].flatMap((fy) => [0, 0.5, 1].map((fx) => ({ lat: want.minlat + (want.maxlat - want.minlat) * fy, lon: want.minlon + (want.maxlon - want.minlon) * fx })));
-      if (pts.every((p) => (o.loaded || []).some((b) => insideBox(p, b)))) return;
-      busyMore = true;
-      setLoadingMore(true);
-      try {
-        const merged = await fetchMore(o, need(LOAD_AROUND_M));
-        if (osmRef.current === o) { extending.current = true; visitOsm = { ...merged, name: o.name }; setOsm(visitOsm); }
-      } catch { /* try again on the next move */ }
-      busyMore = false;
-      setLoadingMore(false);
+      const r = Math.min(1400, Math.max(450, v.distance * 0.9));
+      const visible = tilesToLoad(at, r, o.full, base.loaded, st.done);
+      const ring = tilesToLoad(at, r + 900, o.full, base.loaded, st.done).filter((t) => !visible.some((x) => x.id === t.id)).slice(0, 8);
+      st.visible = new Set(visible.map((t) => t.id));
+      st.queue = [...visible, ...ring];
+      pump();
     };
     if (engine.current) engine.current.onViewChange = onView;
   }, []);

@@ -51,6 +51,11 @@ export class CampusScene {
     this.controls.screenSpacePanning = false; // move along the ground
     this.controls.minPolarAngle = 0;
     this.controls.addEventListener("end", () => this.onViewChange?.(this.view()));
+    let lastView = 0;
+    this.controls.addEventListener("change", () => {
+      const now = performance.now();
+      if (now - lastView > 400) { lastView = now; this.onViewChange?.(this.view()); }
+    });
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     // A button held down (tracked here: not every browser reports it on
     // scroll events) turns scrolling into tilting.
@@ -368,10 +373,8 @@ export class CampusScene {
     // Buildings: one merged mesh for ordinary ones, garages apart (clickable).
     const ordinary = [], garages = [];
     for (const b of osm.buildings) {
-      const geo = extrude(b, Math.max(1, b.height - (b.minHeight || 0)), 1);
-      if (!geo) continue;
-      if (b.minHeight) geo.translate(0, b.minHeight, 0);
-      (b.garage ? garages : ordinary).push({ geo, b });
+      const c = buildingGeo(b);
+      if (c) (b.garage ? garages : ordinary).push({ geo: c.geo.clone(), b, c });
     }
     if (ordinary.length) {
       // Roofs and walls coloured per vertex, so all buildings are one mesh
@@ -379,12 +382,17 @@ export class CampusScene {
       // complex's outline are faded towards the ground colour.
       const site = [new THREE.Color(t.siteRoof), new THREE.Color(t.siteWall)];
       const around = [new THREE.Color(t.aroundRoof), new THREE.Color(t.aroundWall)];
-      const geo = mergeGeometries(ordinary.map((o) => paintGroups(o.geo, o.b.inComplex === false ? around : site)));
+      const geo = mergeGeometries(ordinary.map((o) => {
+        const key = `${this.themeName}|${o.b.inComplex === false ? "a" : "s"}`;
+        if (!o.c.painted.has(key)) o.c.painted.set(key, paintGroups(o.geo, o.b.inComplex === false ? around : site));
+        return o.c.painted.get(key);
+      }));
       const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
       mesh.userData.buildings = true;
       this.pickables.push(mesh);
       this.root.add(mesh);
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 35), new THREE.LineBasicMaterial({ color: t.edge, transparent: true, opacity: this.themeName === "dark" ? 0.22 : 0.35 }));
+      const edgeGeo = mergeGeometries(ordinary.map((o) => (o.c.edges ||= new THREE.EdgesGeometry(o.c.geo, 35))));
+      const edges = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: t.edge, transparent: true, opacity: this.themeName === "dark" ? 0.22 : 0.35 }));
       this.root.add(edges);
       this.detail.push(edges);
     }
@@ -637,6 +645,18 @@ export class CampusScene {
     }
     if (building) this.onPick?.({ building });
   }
+}
+
+// A building's 3D shape (and its coloured copies and edges) is made once
+// and reused when the map is redrawn (more of a big place loaded, theme).
+const GEO_CACHE = new WeakMap();
+function buildingGeo(b) {
+  if (GEO_CACHE.has(b)) return GEO_CACHE.get(b);
+  const geo = extrude(b, Math.max(1, b.height - (b.minHeight || 0)), 1);
+  if (geo && b.minHeight) geo.translate(0, b.minHeight, 0);
+  const c = geo ? { geo, painted: new Map(), edges: null } : null;
+  GEO_CACHE.set(b, c);
+  return c;
 }
 
 // Non-indexed extrusion with groups (0 caps, 1 sides) -> colour attribute.

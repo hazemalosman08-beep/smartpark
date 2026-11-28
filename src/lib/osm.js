@@ -328,6 +328,38 @@ export function mergeOsm(base, extra, box) {
   return out;
 }
 
+// ---- tiles: more of a big place is loaded in small squares ----------------
+// A fixed grid (about 0.9 x 0.85 km at 40°N): each square is downloaded
+// once (and cached), the ones in view first.
+export const TILE_LAT = 0.008, TILE_LON = 0.01;
+
+export function tileBox(id) {
+  const [i, j] = id.split(",").map(Number);
+  return { minlat: i * TILE_LAT, maxlat: (i + 1) * TILE_LAT, minlon: j * TILE_LON, maxlon: (j + 1) * TILE_LON };
+}
+
+const overlaps = (a, b) => a.minlat < b.maxlat && b.minlat < a.maxlat && a.minlon < b.maxlon && b.minlon < a.maxlon;
+const covers = (a, b) => a.minlat <= b.minlat && a.maxlat >= b.maxlat && a.minlon <= b.minlon && a.maxlon >= b.maxlon;
+
+/**
+ * Tiles within `radiusM` of a point and inside the place (`full`), that are
+ * not loaded yet (not in `done`, not inside a loaded box), nearest first.
+ */
+export function tilesToLoad(at, radiusM, full, loaded = [], done = new Set()) {
+  const dLat = radiusM / 111320, dLon = radiusM / (111320 * Math.cos((at.lat * Math.PI) / 180));
+  const i0 = Math.floor((at.lat - dLat) / TILE_LAT), i1 = Math.floor((at.lat + dLat) / TILE_LAT);
+  const j0 = Math.floor((at.lon - dLon) / TILE_LON), j1 = Math.floor((at.lon + dLon) / TILE_LON);
+  const out = [];
+  for (let i = i0; i <= i1; i += 1) for (let j = j0; j <= j1; j += 1) {
+    const id = `${i},${j}`;
+    const box = tileBox(id);
+    if (done.has(id) || (full && !overlaps(box, full)) || loaded.some((l) => covers(l, box))) continue;
+    const c = { lat: (box.minlat + box.maxlat) / 2, lon: (box.minlon + box.maxlon) / 2 };
+    out.push({ id, box, d: Math.hypot((c.lat - at.lat) / dLat, (c.lon - at.lon) / dLon) });
+  }
+  return out.sort((a, b) => a.d - b.d);
+}
+
 /** Lat/lon box -> local metres of a map loaded for `bounds` (x east, y south). */
 export function toLocalBox(bounds, b) {
   const lat0 = (bounds.minlat + bounds.maxlat) / 2, lon0 = (bounds.minlon + bounds.maxlon) / 2;
