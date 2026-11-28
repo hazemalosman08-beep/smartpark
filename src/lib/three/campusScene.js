@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { CAR_SIZE, carParts, extrude, ribbon } from "./lotScene.js";
+import { CAR_SIZE, LotScene, carParts, extrude, ribbon } from "./lotScene.js";
 import { LEVEL_COLOR, occupancyLevel } from "../occupancySim.js";
 import { toLocalBox } from "../osm.js";
 
@@ -105,7 +105,9 @@ export class CampusScene {
     this.labels = new THREE.Group();
     this.trip = new THREE.Group();
     this.live = new THREE.Group(); // live lots: every space and the cars in them
-    this.scene.add(this.root, this.labels, this.trip, this.live);
+    this.guides = new Map(); // feed id -> { scene: LotScene (embedded), holder, key }
+    this.guideRoot = new THREE.Group();
+    this.scene.add(this.root, this.labels, this.trip, this.live, this.guideRoot);
     this.tripData = null;
     this.themeName = "dark";
     this.theme = THEMES.dark;
@@ -140,6 +142,7 @@ export class CampusScene {
         if (f.t >= 1) this.flight = null;
       }
       this.controls.update();
+      for (const gd of this.guides.values()) { gd.scene.frame(dt); noFog(gd.holder); }
       this.keepInside();
       if (t - (this.lastDeclutter || 0) > 150) { this.lastDeclutter = t; this.declutter(); }
       this.renderer.render(this.scene, this.camera);
@@ -200,6 +203,7 @@ export class CampusScene {
   }
 
   dispose() {
+    for (const id of [...this.guides.keys()]) this.setLiveGuide(id, null);
     this.stop();
     this.controls.dispose();
     this.clear();
@@ -249,7 +253,7 @@ export class CampusScene {
       const isChosen = o === trip.chosen;
       const lot = o.lot;
       // A live lot shows its own spaces: no cover over it.
-      const liveLot = this.liveData?.lots?.some((l) => l.lotId === lot.id);
+      const liveLot = [...this.guides.values()].some((gd) => gd.lotId === lot.id);
       const fill = !liveLot && (isChosen || !this.occ) ? flatGeo(lot, 1.2) : null;
       if (fill) {
         const m = new THREE.Mesh(fill, new THREE.MeshBasicMaterial({ color: isChosen ? 0x22c55e : 0x4ade80, transparent: true, opacity: isChosen ? 0.8 : 0.4, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -20, polygonOffsetUnits: -20 }));
@@ -306,6 +310,7 @@ export class CampusScene {
     if (name === this.themeName) return;
     this.themeName = name;
     this.theme = THEMES[name] || THEMES.dark;
+    for (const gd of this.guides.values()) gd.scene.setTheme(name);
     if (this.osm) { this.build(); this.fitFog(); if (this.tripData) this.setTrip(this.tripData, { fly: false }); }
   }
 
@@ -508,6 +513,7 @@ export class CampusScene {
     radialFog(this.root);
     radialFog(this.labels);
     if (this.occ) this.paintOccupancy();
+    this.hideLotsUnderGuides();
   }
 
   rebuildLive() { if (this.liveData) this.setLiveLots(this.liveData.lots, { target: this.liveData.target }); }
@@ -640,6 +646,51 @@ export class CampusScene {
       this.live.add(label.sprite);
     }
     radialFog(this.live);
+  }
+
+  /**
+   * A live lot drawn as its driver guide draws it (the picture's ground,
+   * painted lines, islands, trees, every space free or taken, 3D cars, the
+   * entrance, the route preview car to the chosen space), placed on the lot.
+   * g: { lot (plan, from the camera), features, sceneImages, rect, statuses,
+   *      cars, placement {pcx,pcy,cx,cy,angle,scale,flip}, route, target }.
+   * null removes it.
+   */
+  setLiveGuide(id, g) {
+    let gd = this.guides.get(id);
+    if (!g) {
+      if (gd) { this.guideRoot.remove(gd.holder); gd.scene.dispose(); this.guides.delete(id); this.hideLotsUnderGuides(); }
+      return;
+    }
+    if (!gd) {
+      const scene = new LotScene(null, { embedded: this.renderer });
+      scene.setTheme(this.themeName);
+      const holder = new THREE.Group(), scaler = new THREE.Group();
+      scaler.add(scene.scene);
+      holder.add(scaler);
+      this.guideRoot.add(holder);
+      gd = { scene, holder, scaler, key: "" };
+      this.guides.set(id, gd);
+    }
+    if (gd.lotId !== g.lotId) { gd.lotId = g.lotId; this.hideLotsUnderGuides(); }
+    const sc = gd.scene;
+    const lotKey = [g.lot, g.features, g.sceneImages, g.rect];
+    if (!gd.lotKey || lotKey.some((v, i) => v !== gd.lotKey[i])) { gd.lotKey = lotKey; sc.setLot({ lot: g.lot, features: g.features, sceneImages: g.sceneImages, rect: g.rect }); }
+    if (gd.statuses !== g.statuses) { gd.statuses = g.statuses; sc.setStatuses(g.statuses); sc.setCars(g.cars || []); }
+    sc.setRoute(g.route || [], g.target || null, { live: false });
+    // Plan (lot units x m metres inside the scene) -> campus metres.
+    const pl = g.placement, m = sc.m || 1, k = pl.scale / m;
+    // A little above the map's flat surfaces (they are drawn pulled forward).
+    gd.holder.position.set(pl.cx, 0.9, pl.cy);
+    gd.holder.rotation.set(0, -pl.angle, 0);
+    gd.scaler.scale.set(pl.flip ? -k : k, k, k);
+    sc.scene.position.set(-pl.pcx * m, 0, -pl.pcy * m);
+  }
+
+  // A lot drawn by its live guide: the plain lot surface under it is hidden.
+  hideLotsUnderGuides() {
+    const under = new Set([...this.guides.values()].map((gd) => gd.lotId));
+    for (const [id, mesh] of this.lotMesh || []) if (!mesh.userData.cap) mesh.visible = !under.has(id);
   }
 
   /** Where a lot is on screen (CSS pixels in the canvas), or null if not in view. */
@@ -884,6 +935,17 @@ function mapLabel(text, { bg = "#0f172a", fg = "#fff", badge = "", badgeBg = "#f
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true, sizeAttenuation: false }));
   sprite.renderOrder = 20;
   return { sprite, texture, aspect: c.width / c.height };
+}
+
+// The embedded lots are not faded by the map's edge fog (they are always
+// near the middle of what is looked at).
+function noFog(group) {
+  group.traverse((o) => {
+    // Bounds of moved/instanced parts are not reliable here: always draw.
+    o.frustumCulled = false;
+    const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of mats) if (m.fog) { m.fog = false; m.needsUpdate = true; }
+  });
 }
 
 function areaOf(p) {

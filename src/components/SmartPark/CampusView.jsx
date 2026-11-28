@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock, MapPin, Moon, Plus, Search, ShieldCheck, Sun, Video, X } from "lucide-react";
 import { feedOccupancy, feedStatuses, placeKey } from "@/lib/campusFeeds";
 import LiveLotView from "@/components/SmartPark/LiveLotView";
+import FeedGuide from "@/components/SmartPark/FeedGuide";
 import { placementFor, pointToPolygon, toCampus } from "@/lib/feedPlacement";
 import { deriveLot, normalizeCalibration } from "@/lib/vision/lot";
 import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, fetchRaw, mainOutlineBounds, mergeOsm, tilesToLoad, toLatLon, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
@@ -340,7 +341,7 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
       const stale = feedOcc.get(f.lotId)?.stale;
       const statuses = feedStatuses(f);
       out.push({
-        lotId: f.lotId, feedId: f.id,
+        lotId: f.lotId, feedId: f.id, feed: f, plan: plan.lot, placement: pl, statuses: stale ? new Map() : statuses,
         spaces: stalls.map((st) => ({
           id: st.id, label: st.label, kind: st.kind,
           poly: st.poly.map((p) => toCampus(p, pl)), front: toCampus(st.front, pl), back: toCampus(st.back, pl),
@@ -372,7 +373,7 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
   useEffect(() => { engine.current?.setTrip(shownTrip, { fly: shownTrip?.fly !== false }); }, [trip]); // eslint-disable-line react-hooks/exhaustive-deps
   const lastTarget = useRef("");
   useEffect(() => {
-    engine.current?.setLiveLots(liveLots, { target: shownTrip?.target || null });
+    engine.current?.setLiveLots([], { target: null });
     // Readings change: redraw the walk from the (possibly new) space, without flying.
     const key = `${shownTrip?.target?.spaceId || ""}`;
     if (shownTrip && key !== lastTarget.current) { lastTarget.current = key; engine.current?.setTrip({ ...shownTrip, fly: false }, { fly: false }); }
@@ -778,6 +779,10 @@ export default function CampusView({ mode = "user", feeds = [], activeFeedId = n
             <div className="p-3">{cameraSlot}</div>
           </div>
         )}
+        {liveLots.map((l) => (
+          <FeedGuide key={l.feedId} engine={engine} feed={l.feed} lot={l.plan} statuses={l.statuses} placement={l.placement}
+            targetId={shownTrip?.chosen?.lot.id === l.lotId ? shownTrip?.target?.spaceId : null} />
+        ))}
         {insideFeed && <LiveLotView feed={insideFeed} lotName={osm?.parking.find((p) => p.id === insideFeed.lotId)?.name || insideFeed.lotName} onBack={() => setInsideId(null)} />}
         <p className="absolute bottom-2 right-3 text-[11px] text-neutral-400">
           Map data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer" className="underline">{ATTRIBUTION}</a>

@@ -40,18 +40,31 @@ const MAX_CARS = 400;
 const LABEL = 0.036; // label height, share of the screen height
 
 export class LotScene {
-  constructor(canvas, { onProgress = null } = {}) {
+  /**
+   * canvas: the lot's own screen. Or { embedded: renderer }: the lot is drawn
+   * inside another 3D map (the campus map): this.scene is then a group that
+   * map places on the lot, and frame() only animates (no camera, no render).
+   */
+  constructor(canvas, { onProgress = null, embedded = null } = {}) {
     this.canvas = canvas;
     this.onProgress = onProgress;
+    this.embedded = Boolean(embedded);
     const small = Math.min(window.innerWidth, window.innerHeight) < 700;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !small || window.devicePixelRatio < 2, alpha: false, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2));
-    this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 4000);
-    this.controls = new OrbitControls(this.camera, canvas);
-    this.controls.enableDamping = true;
-    this.controls.maxPolarAngle = Math.PI * 0.47;
-    this.controls.enabled = false;
+    if (embedded) {
+      this.renderer = embedded;
+      this.scene = new THREE.Group();
+      this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 4000);
+      this.controls = { enabled: false, target: new THREE.Vector3(), update() {}, dispose() {} };
+    } else {
+      this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !small || window.devicePixelRatio < 2, alpha: false, powerPreference: "high-performance" });
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, small ? 1.5 : 2));
+      this.scene = new THREE.Scene();
+      this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 4000);
+      this.controls = new OrbitControls(this.camera, canvas);
+      this.controls.enableDamping = true;
+      this.controls.maxPolarAngle = Math.PI * 0.47;
+      this.controls.enabled = false;
+    }
     this.theme = THEMES.dark;
     this.themeName = "dark";
     this.mode = "bird";
@@ -63,7 +76,7 @@ export class LotScene {
     this.hemi = new THREE.HemisphereLight(0xffffff, 0x222222, 1);
     this.sun = new THREE.DirectionalLight(0xffffff, 1);
     this.sun.position.set(-0.6, 1, 0.4);
-    this.scene.add(this.hemi, this.sun);
+    if (!this.embedded) this.scene.add(this.hemi, this.sun); // embedded: the host map's light
     this.cars = new Map(); // key -> { x, z, h, tx, tz, th, color, seen }
     this.carMeshes = null;
     this.data = { lot: null, features: null, sceneImage: null, rect: null, statuses: null, route: [], target: null, ego: null, previewing: false };
@@ -112,7 +125,7 @@ export class LotScene {
       mats.forEach((m) => { m.map?.dispose?.(); m.dispose?.(); });
     });
     this.groundTexture?.dispose();
-    this.renderer.dispose();
+    if (!this.embedded) this.renderer.dispose();
   }
 
   // --------------------------------------------------------------- inputs
@@ -223,8 +236,10 @@ export class LotScene {
 
   applyThemeLights() {
     const t = this.theme;
-    this.scene.background = new THREE.Color(t.bg);
-    this.scene.fog = new THREE.Fog(t.bg, 250, 900);
+    if (!this.embedded) {
+      this.scene.background = new THREE.Color(t.bg);
+      this.scene.fog = new THREE.Fog(t.bg, 250, 900);
+    }
     this.hemi.color.set(t.sky);
     this.hemi.groundColor.set(t.skyGround);
     this.hemi.intensity = t.hemi;
@@ -240,10 +255,12 @@ export class LotScene {
     // Ground: the lot's own surroundings drawn from the picture, on a plain base.
     const b = rect || lot.bounds;
     const cx = (b.x + b.w / 2) * this.m, cz = (b.y + b.h / 2) * this.m;
-    const base = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000), new THREE.MeshBasicMaterial({ color: t.ground }));
-    base.rotation.x = -Math.PI / 2;
-    base.position.set(cx, -0.05, cz);
-    g.add(base);
+    if (!this.embedded) {
+      const base = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000), new THREE.MeshBasicMaterial({ color: t.ground }));
+      base.rotation.x = -Math.PI / 2;
+      base.position.set(cx, -0.05, cz);
+      g.add(base);
+    }
     const url = sceneImages?.[this.themeName];
     if (url && rect) {
       if (this.groundUrl !== url) {
@@ -290,7 +307,8 @@ export class LotScene {
 
     // Buildings: footprints found in the picture or drawn by hand. Height is
     // not in a photo: a standard three-storey block.
-    const footprints = [
+    // In a campus map the real buildings are already there.
+    const footprints = this.embedded ? [] : [
       ...(features?.buildings || []),
       ...(lot.footprints || []).map((f) => ({ outer: f.points, holes: [] })),
     ];
@@ -342,7 +360,7 @@ export class LotScene {
 
     // Entrance and buildings (destinations).
     if (lot.entrance) this.addPin(lot.entrance, "ENTRANCE", { bg: this.themeName === "dark" ? "#e2e8f0" : "#0f172a", fg: this.themeName === "dark" ? "#0f172a" : "#fff", height: 3 });
-    for (const bld of lot.buildings || []) {
+    for (const bld of this.embedded ? [] : lot.buildings || []) {
       const dest = this.data.destinationId ? bld.id === this.data.destinationId : bld === lot.buildings[0];
       this.addPin(bld, bld.name.toUpperCase(), { bg: dest ? "#f59e0b" : "#78716c", fg: dest ? "#1c1917" : "#fff", height: footprints.some((f) => inside(bld, f.outer)) ? BUILDING_HEIGHT + 3 : 4 });
     }
@@ -526,7 +544,7 @@ export class LotScene {
   // ------------------------------------------------------------ per frame
   frame(dt) {
     const time = this.clock.elapsedTime;
-    if (!this.data.lot) { this.renderer.render(this.scene, this.camera); return; }
+    if (!this.data.lot) { if (!this.embedded) this.renderer.render(this.scene, this.camera); return; }
     // Cars glide to their latest tracked positions.
     const k = 1 - Math.exp(-dt * 5);
     if (this.carMeshes) {
@@ -607,6 +625,7 @@ export class LotScene {
       this.marker.ring.material.opacity = 1 - ((time * 0.8) % 1);
     }
 
+    if (this.embedded) return; // the host map has the camera
     // Camera.
     if (this.mode === "free") {
       this.controls.update();
