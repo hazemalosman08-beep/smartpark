@@ -3,6 +3,12 @@
 Augmentations (written here, no extra dependency): any rotation and flips
 (drone pictures have no "up"), scale, white <-> yellow line colour swaps,
 brightness / contrast / colour cast, cast shadows, blur and noise.
+
+domain="satellite": every picture is scaled so a space is SPACE_PX pixels
+wide (the app scales satellite images the same way, from the spacing its
+rule-based finder measures), degraded to satellite sharpness (a space only
+7-12 real pixels wide, then enlarged back; JPEG; blur), and cut into
+size x size windows: a satellite lot is many small spaces, not one view.
 """
 from __future__ import annotations
 
@@ -17,7 +23,57 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 from .annotation import load
 from .masks import letterbox, render
 
+SPACE_PX = 16  # width of a space in the satellite model's input
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)
+
+
+def space_width(polys):
+    """Median short side of the spaces (pixels)."""
+    w = []
+    for p in polys:
+        if len(p) < 4:
+            continue
+        a = math.dist(p[0], p[1]); b = math.dist(p[1], p[2])
+        w.append(min(a, b))
+    return float(np.median(w)) if w else 0.0
+
+
+def satellite_view(img, polys, size, rng=None, centre=False):
+    """Scale to SPACE_PX per space, degrade like satellite imagery, cut a
+    size x size window (random, or the middle of the spaces when centre).
+    Returns (img, polys) with img exactly size x size."""
+    import io
+    w0 = space_width(polys) or 30.0
+    k = SPACE_PX / w0
+    img = img.resize((max(1, round(img.size[0] * k)), max(1, round(img.size[1] * k))), Image.BILINEAR)
+    polys = [[[x * k, y * k] for x, y in p] for p in polys]
+    # Satellite sharpness: the space is only 7-12 real pixels wide.
+    real = rng.uniform(7, 12) if rng else 9.5
+    d = real / SPACE_PX
+    small = img.resize((max(1, round(img.size[0] * d)), max(1, round(img.size[1] * d))), Image.BILINEAR)
+    buf = io.BytesIO()
+    small.save(buf, "JPEG", quality=int(rng.uniform(45, 85)) if rng else 70)
+    img = Image.open(io.BytesIO(buf.getvalue())).convert("RGB").resize(img.size, Image.BILINEAR)
+    W, H = img.size
+    if centre and polys:
+        xs = [x for p in polys for x, _ in p]; ys = [y for p in polys for _, y in p]
+        cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    elif rng and polys and rng.random() < 0.85:
+        p = polys[rng.randrange(len(polys))]
+        cx, cy = p[0][0] + rng.uniform(-size / 3, size / 3), p[0][1] + rng.uniform(-size / 3, size / 3)
+    else:
+        cx, cy = W / 2, H / 2
+    x0, y0 = int(round(cx - size / 2)), int(round(cy - size / 2))
+    out = Image.new("RGB", (size, size), (0, 0, 0))
+    out.paste(img.crop((max(0, x0), max(0, y0), min(W, x0 + size), min(H, y0 + size))), (max(0, -x0), max(0, -y0)))
+    polys = [[[x - x0, y - y0] for x, y in p] for p in polys]
+    # Spaces mostly outside the window are dropped from the target.
+    keep = []
+    for p in polys:
+        cxp = sum(x for x, _ in p) / len(p); cyp = sum(y for _, y in p) / len(p)
+        if 0 <= cxp < size and 0 <= cyp < size:
+            keep.append(p)
+    return out, keep
 STD = np.array([0.229, 0.224, 0.225], np.float32)
 
 
@@ -27,7 +83,8 @@ def files_for(ann_dir, split):
 
 
 class SpaceDataset:
-    def __init__(self, files, size=512, augment=False, seed=0):
+    def __init__(self, files, size=512, augment=False, seed=0, domain="camera"):
+        self.domain = domain
         self.items = [(f, load(f)) for f in files]
         self.size = size
         self.augment = augment
@@ -101,9 +158,16 @@ class SpaceDataset:
 
     def __getitem__(self, i):
         img, polys = self._picture(i)
-        if self.augment:
-            img, polys = self._augment(img, polys)
-        boxed, scale, ox, oy = letterbox(img, self.size)
+        if self.domain == "satellite":
+            # Augment first (rotation, colour, shadows…), then satellite view.
+            if self.augment:
+                img, polys = self._augment(img, polys)
+            boxed, polys = satellite_view(img, polys, self.size, self.rng if self.augment else None, centre=not self.augment)
+            scale, ox, oy = 1.0, 0, 0
+        else:
+            if self.augment:
+                img, polys = self._augment(img, polys)
+            boxed, scale, ox, oy = letterbox(img, self.size)
         mask = render(polys, self.size, scale, ox, oy)
         x = (np.asarray(boxed, np.float32) / 255.0 - MEAN) / STD
         if self.augment and self.rng.random() < 0.2:
@@ -113,5 +177,8 @@ class SpaceDataset:
     def truth(self, i):
         """Ground-truth spaces in model-input pixels (no augmentation), for metrics."""
         img, polys = self._picture(i)
+        if self.domain == "satellite":
+            _, keep = satellite_view(img, polys, self.size, None, centre=True)
+            return self.items[i][1].lot_id, keep
         _, scale, ox, oy = letterbox(img, self.size)
         return self.items[i][1].lot_id, [[[x * scale + ox, y * scale + oy] for x, y in p] for p in polys]

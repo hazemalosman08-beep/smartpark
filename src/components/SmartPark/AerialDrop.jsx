@@ -4,10 +4,12 @@ import { IMAGERY, fetchLotImage } from "@/lib/lotImagery";
 import { autoMapLot } from "@/lib/vision/autoMap";
 import { imagePixels } from "@/lib/vision/stallFinder";
 import { findSatelliteStalls } from "@/lib/vision/satelliteStalls";
+import { detectSatelliteSpaces } from "@/lib/vision/spaceModel";
+import { mergeSpaces } from "@/lib/vision/hybrid";
 
 // Spaces seen from above: the satellite finder (rows of thin painted lines),
 // or the general finder if that finds more (big, close-up aerial photos).
-function findSpaces(img, mask = null) {
+async function findSpaces(img, mask = null) {
   const max = 1600;
   const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
   const c = document.createElement("canvas");
@@ -28,7 +30,16 @@ function findSpaces(img, mask = null) {
   const satStalls = sat.stalls.map((st) => ({ ...st, label: `${st.row}${st.index}`, id: `${st.row}${st.index}-${Math.random().toString(36).slice(2, 7)}`, auto: true }));
   let general = { stalls: [], lanes: [], entrance: null };
   try { general = autoMapLot({ image: imagePixels(mask ? c : img), vehicles: [], view: "overhead" }); } catch { /* the satellite result stands */ }
-  return general.stalls.length > satStalls.length ? general : { stalls: satStalls, lanes: [], entrance: null };
+  const best = general.stalls.length > satStalls.length ? general : { stalls: satStalls, lanes: [], entrance: null };
+  // A trained satellite model (if deployed) adds the spaces the rules missed.
+  try {
+    const model = sat.spacing ? await detectSatelliteSpaces(c, sat.spacing) : null;
+    if (model?.length) {
+      const merged = mergeSpaces(best.stalls, model);
+      return { ...best, stalls: merged.stalls, model: { added: merged.added, confirmed: merged.confirmed } };
+    }
+  } catch { /* no model, or it failed: the rule-based result stands */ }
+  return best;
 }
 import { EMPTY_CALIBRATION, normalizeCalibration } from "@/lib/vision/lot";
 
@@ -133,7 +144,7 @@ export default function AerialDrop({ onReady, lotOutline = null }) {
       const img = new Image();
       img.src = u;
       await img.decode();
-      const result = findSpaces(img, meta.current?.mask);
+      const result = await findSpaces(img, meta.current?.mask);
       const calibration = normalizeCalibration({ ...EMPTY_CALIBRATION, stalls: result.stalls, lanes: result.lanes, entrance: result.entrance || null, view: "overhead", aspect: img.naturalWidth / img.naturalHeight });
       setFound({ calibration });
       onReady({ blob: file, calibration, geo: meta.current?.geo || null });

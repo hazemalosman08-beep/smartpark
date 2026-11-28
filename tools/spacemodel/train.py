@@ -74,13 +74,14 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--max-steps", type=int, default=0, help="stop early (smoke tests)")
     ap.add_argument("--init", default="", help="start from these weights (e.g. synthetic pre-training)")
+    ap.add_argument("--domain", default="camera", choices=["camera", "satellite"], help="satellite: pictures scaled to a fixed space size and degraded to satellite sharpness")
     a = ap.parse_args(argv)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(a.out, exist_ok=True)
-    train = SpaceDataset(files_for(a.data, "train"), a.size, augment=True)
-    val = SpaceDataset(files_for(a.data, "val"), a.size)
-    test = SpaceDataset(files_for(a.data, "test"), a.size)
+    train = SpaceDataset(files_for(a.data, "train"), a.size, augment=True, domain=a.domain)
+    val = SpaceDataset(files_for(a.data, "val"), a.size, domain=a.domain)
+    test = SpaceDataset(files_for(a.data, "test"), a.size, domain=a.domain)
     print(f"device {device} | train {len(train)} val {len(val)} test {len(test)} pictures")
     model = build_model(a.encoder, not a.no_pretrained).to(device)
     if a.init:
@@ -124,7 +125,7 @@ def main(argv=None):
     model.load_state_dict(torch.load(os.path.join(a.out, "best.pt"), map_location=device))
     test_metrics = evaluate_split(model, test, device) if len(test) else None
     report = {
-        "model": {"arch": "Unet", "encoder": a.encoder, "input": a.size, "classes": ["background", "interior", "boundary"]},
+        "model": {"arch": "Unet", "encoder": a.encoder, "input": a.size, "classes": ["background", "interior", "boundary"], "domain": a.domain},
         "data": {"train": len(train), "val": len(val), "test": len(test),
                  "lots": sorted({ann.lot_id for _, ann in train.items + val.items + test.items})},
         "best_val_f1": best, "history": history, "test": test_metrics,

@@ -114,3 +114,17 @@ class GrowDecodeTest(unittest.TestCase):
         grow = decode(probs, min_area=20)
         self.assertLess(match([p for p, _ in plain], row, 0.5)[0], 2, "plain decoding merges the row")
         self.assertEqual(match([p for p, _ in grow], spaces, 0.5), (9, 0, 0), "splitting keeps all nine")
+
+
+class SatelliteViewTest(unittest.TestCase):
+    def test_spaces_scaled_to_fixed_width_and_window_exact(self):
+        import random
+        from .data import SPACE_PX, satellite_view, space_width
+        img = Image.new("RGB", (900, 600), (120, 120, 120))
+        polys = [[[100 + 40 * k, 100], [140 + 40 * k, 100], [140 + 40 * k, 180], [100 + 40 * k, 180]] for k in range(15)]
+        out, keep = satellite_view(img, polys, 256, random.Random(1))
+        self.assertEqual(out.size, (256, 256))
+        self.assertTrue(keep)
+        self.assertAlmostEqual(space_width(keep), SPACE_PX, delta=0.5)
+        out2, keep2 = satellite_view(img, polys, 256, None, centre=True)
+        self.assertEqual(len(keep2), 15)

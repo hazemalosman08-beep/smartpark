@@ -29,13 +29,15 @@ def main(argv=None):
     ap.add_argument("--size", type=int, default=512)
     ap.add_argument("--encoder", default="mobilenet_v2")
     ap.add_argument("--datasets", default="", help="comma list of datasets used, with licences, for the record")
+    ap.add_argument("--domain", default="camera", choices=["camera", "satellite"])
     a = ap.parse_args(argv)
 
     model = build_model(a.encoder, pretrained=False)
     model.load_state_dict(torch.load(a.weights, map_location="cpu"))
     model.eval()
     os.makedirs(a.out, exist_ok=True)
-    path = os.path.join(a.out, "space-seg.onnx")
+    name = "space-sat" if a.domain == "satellite" else "space-seg"
+    path = os.path.join(a.out, f"{name}.onnx")
     x = torch.randn(1, 3, a.size, a.size)
     # One self-contained file (the browser loads a single file; no external weights).
     kwargs = dict(input_names=["image"], output_names=["logits"], opset_version=17, do_constant_folding=True)
@@ -53,14 +55,14 @@ def main(argv=None):
         raise SystemExit(f"ONNX output differs from PyTorch (max error {err})")
     metrics = json.load(open(a.metrics)) if a.metrics and os.path.exists(a.metrics) else {}
     sidecar = {
-        "file": "space-seg.onnx", "input": a.size, "classes": ["background", "interior", "boundary"],
+        "file": f"{name}.onnx", "input": a.size, "domain": a.domain, "spacePx": 16 if a.domain == "satellite" else None, "classes": ["background", "interior", "boundary"],
         "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "threshold": 0.5, "minArea": 30,
         "arch": f"Unet/{a.encoder}", "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "datasets": [d for d in a.datasets.split(",") if d],
         "test_metrics": (metrics.get("test") or {}).get("overall"),
         "note": "Metrics measured on held-out lots by tools/spacemodel/train.py; empty if not measured.",
     }
-    with open(os.path.join(a.out, "space-seg.json"), "w") as f:
+    with open(os.path.join(a.out, f"{name}.json"), "w") as f:
         json.dump(sidecar, f, indent=1)
     print(f"wrote {path} ({os.path.getsize(path) / 1e6:.1f} MB), max |onnx - torch| = {err:.2e}")
 

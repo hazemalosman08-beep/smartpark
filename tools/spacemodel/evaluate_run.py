@@ -21,9 +21,10 @@ def main(argv=None):
     ap.add_argument("--weights", required=True)
     ap.add_argument("--size", type=int, default=512)
     ap.add_argument("--encoder", default="mobilenet_v2")
+    ap.add_argument("--domain", default="camera", choices=["camera", "satellite"])
     a = ap.parse_args(argv)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    ds = SpaceDataset(files_for(a.data, "test"), a.size)
+    ds = SpaceDataset(files_for(a.data, "test"), a.size, domain=a.domain)
     model = build_model(a.encoder, pretrained=False).to(device)
     model.load_state_dict(torch.load(a.weights, map_location=device))
     model.eval()
