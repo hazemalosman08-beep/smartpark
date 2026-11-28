@@ -519,7 +519,7 @@ export default function CampusView() {
         )}
         {osm && (
           <p className="pointer-events-none absolute bottom-2 left-3 max-w-[60%] text-[11px] text-neutral-400">
-            {touch ? "One finger: move · Two fingers: zoom, tilt and turn" : "Drag: move · Scroll: zoom · Hold click + scroll, or right-drag: tilt and turn"}
+            {touch ? "One finger: move · Two fingers: pinch to zoom, twist to turn, slide up or down to tilt" : "Drag: move · Scroll: zoom · Hold click + scroll, or right-drag: tilt and turn"}
           </p>
         )}
         {occ && (

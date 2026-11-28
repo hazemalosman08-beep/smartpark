@@ -57,6 +57,30 @@ export class CampusScene {
       if (now - lastView > 400) { lastView = now; this.onViewChange?.(this.view()); }
     });
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    // Two fingers twisting (sliding in opposite directions around each
+    // other) turn the map with them, on top of pinch-zoom and tilt.
+    let twist = null;
+    const angleOf = (t) => Math.atan2(t[1].clientY - t[0].clientY, t[1].clientX - t[0].clientX);
+    canvas.addEventListener("touchstart", (e) => { twist = e.touches.length === 2 ? angleOf(e.touches) : null; }, { passive: true });
+    canvas.addEventListener("touchmove", (e) => {
+      if (e.touches.length !== 2 || twist === null) return;
+      const a = angleOf(e.touches);
+      let d = a - twist;
+      if (d > Math.PI) d -= 2 * Math.PI;
+      if (d < -Math.PI) d += 2 * Math.PI;
+      twist = a;
+      if (Math.abs(d) > 0.002) this.turn(d);
+    }, { passive: true });
+    canvas.addEventListener("touchend", (e) => { twist = e.touches.length === 2 ? angleOf(e.touches) : null; }, { passive: true });
+    // Safari on a Mac: the trackpad's rotate gesture.
+    let gesture = 0;
+    canvas.addEventListener("gesturestart", (e) => { e.preventDefault(); gesture = e.rotation || 0; });
+    canvas.addEventListener("gesturechange", (e) => {
+      e.preventDefault();
+      const d = (((e.rotation || 0) - gesture) * Math.PI) / 180;
+      gesture = e.rotation || 0;
+      if (Math.abs(d) > 0.002) this.turn(d);
+    });
     // A button held down (tracked here: not every browser reports it on
     // scroll events) turns scrolling into tilting.
     this.held = 0;
@@ -133,6 +157,15 @@ export class CampusScene {
     this.camera.position.copy(t).add(new THREE.Vector3().setFromSpherical(sph));
     this.camera.lookAt(t);
     this.onViewChange?.(this.view());
+  }
+
+  /** Turn the map (radians, clockwise on screen as the fingers turn). */
+  turn(d) {
+    const t = this.controls.target;
+    const off = this.camera.position.clone().sub(t);
+    off.applyAxisAngle(new THREE.Vector3(0, 1, 0), d);
+    this.camera.position.copy(t).add(off);
+    this.camera.lookAt(t);
   }
 
   /** Where the view is: its centre (local metres) and distance. */
