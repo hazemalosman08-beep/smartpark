@@ -235,3 +235,22 @@ test("parking mapped as a point becomes a small lot of about its size", async ()
   assert.equal(near.lot.name, "Front lot");
   assert.ok(near.distance < 60);
 });
+
+test("a place too big to show: its main outline piece, centred on the place itself", async () => {
+  const { limitBounds, mainOutlineBounds } = await import("../../src/lib/osm.js");
+  const ring = (lat, lon, dLat, dLon) => [{ lat, lon }, { lat, lon: lon + dLon }, { lat: lat + dLat, lon: lon + dLon }, { lat: lat + dLat, lon }, { lat, lon }];
+  // Main campus (2 x 2 km) plus a far-away farm piece.
+  const outline = { type: "relation", id: 1, tags: { type: "multipolygon" }, members: [
+    { type: "way", role: "outer", geometry: ring(40.0, -83.03, 0.018, 0.0235) },
+    { type: "way", role: "outer", geometry: ring(40.06, -83.08, 0.004, 0.005) },
+  ] };
+  const extent = { minlat: 40.0, maxlat: 40.064, minlon: -83.08, maxlon: -83.0065 };
+  const main = mainOutlineBounds(outline, extent);
+  assert.ok(Math.abs(main.minlat - 40.0) < 1e-4 && Math.abs(main.maxlon - -83.0065) < 1e-4, JSON.stringify(main));
+  assert.equal(limitBounds(main).limited, false, "the main campus fits");
+  // Centred on the place's point when still too big, kept inside the area.
+  const big = { minlat: 40.0, maxlat: 40.1, minlon: -83.1, maxlon: -83.0 };
+  const { bounds } = limitBounds(big, { lat: 40.005, lon: -83.02 });
+  assert.ok(Math.abs(bounds.minlat - 40.0) < 1e-9, "clamped inside");
+  assert.ok(Math.abs((bounds.minlon + bounds.maxlon) / 2 - -83.02) < 1e-9);
+});

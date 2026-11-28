@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Building2, Car, Crosshair, FileUp, Footprints, Loader2, Lock, MapPin, Moon, Search, Sun, X } from "lucide-react";
-import { ATTRIBUTION, buildingCounts, destinations, fetchArea, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
+import { ATTRIBUTION, buildingCounts, destinations, fetchArea, fetchOutline, mainOutlineBounds, limitBounds, nearestParking, parkingSummary, parseOsm, searchDestinations, searchPlaces } from "@/lib/osm";
 import { CampusScene } from "@/lib/three/campusScene";
 import { LEVEL_COLOR, createSimulation, occupancyLevel } from "@/lib/occupancySim";
 import { STATES, stateByCode } from "@/lib/usStates";
@@ -192,7 +192,15 @@ export default function CampusView() {
     setPlacesOpen(false); setError("");
     typed.current = false;
     setQuery(place.name);
-    const { bounds, limited } = limitBounds(place.bounds);
+    // Too big to show whole (e.g. a university whose outline takes in its
+    // airport and farms): its main piece, centred on the place itself.
+    let area = place.bounds;
+    if (limitBounds(area).limited && place.osm) {
+      setBusy(`Finding ${place.name}…`);
+      const outline = await fetchOutline(place.osm).catch(() => null);
+      area = (outline && mainOutlineBounds(outline, area)) || area;
+    }
+    const { bounds, limited } = limitBounds(area, place.centre);
     setBusy(`Downloading ${place.name}…`);
     try {
       const data = await fetchArea(bounds, { onStatus: setBusy, outlineOf: place.osm });
@@ -290,7 +298,7 @@ export default function CampusView() {
         </form>
         {busy && <p className="flex items-center gap-2 text-sm text-sky-200"><Loader2 className="h-4 w-4 animate-spin" /> {busy}</p>}
         {error && <p className="rounded-md bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>}
-        {osm?.limited && <p className="text-[11px] text-amber-200/80">This place is large: the middle 3 × 3 km are shown.</p>}
+        {osm?.limited && <p className="text-[11px] text-amber-200/80">This place is large: 3 × 3 km around its main site are shown.</p>}
         {(!osm || busy) && (
           <section aria-disabled="true" className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-3 opacity-70">
             <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-neutral-400"><StepDot n={2} /> Where are you going? <Lock className="ml-auto h-3.5 w-3.5" /></p>

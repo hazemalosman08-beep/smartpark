@@ -32,22 +32,20 @@ export async function searchPlaces(text, { signal, near = null, limit = 7, state
   // it has no usable box), ask for more (places in neighbours are dropped),
   // keep only places in it.
   const within = Boolean(state || country);
-  url.searchParams.set("limit", String(within ? limit * 4 : limit));
+  url.searchParams.set("limit", String(within ? 40 : limit * 3));
   url.searchParams.set("lang", "en");
   const box = state?.bbox || country?.area?.bbox;
   const pad = state ? 0.3 : 0.5;
   if (box) {
     const [w, sth, e, n] = box;
     url.searchParams.set("bbox", [w - pad, sth - pad, e + pad, n + pad].map((v) => v.toFixed(2)).join(","));
-  } else if (country?.area?.centre) {
-    url.searchParams.set("lat", country.area.centre.lat.toFixed(3)); url.searchParams.set("lon", country.area.centre.lon.toFixed(3));
-  } else if (near) { url.searchParams.set("lat", near.lat.toFixed(4)); url.searchParams.set("lon", near.lon.toFixed(4)); }
+  } else if (near && !within) { url.searchParams.set("lat", near.lat.toFixed(4)); url.searchParams.set("lon", near.lon.toFixed(4)); }
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`Place search is busy (${res.status}). Try again in a moment.`);
   let places = photonToPlaces(await res.json());
   if (country) places = places.filter((p) => p.countryCode === country.code);
   if (state) places = places.filter((p) => p.state === state.name);
-  return places.slice(0, limit);
+  return rankPlaces(places, q).slice(0, limit);
 }
 
 /** Photon GeoJSON -> places (pure: tested without the network). */
@@ -79,6 +77,27 @@ export function photonToPlaces(geojson) {
   return out.map((p, i) => ({ p, i })).sort((a, b) => (b.p.area - a.p.area) || a.i - b.i).map((x) => x.p);
 }
 
+// Places SmartPark is for (a complex with parking) before the rest.
+const CAMPUS_KIND = /^(university|college|hospital|clinic|school|stadium|sports centre|mall|place of worship|community centre|arts centre|theatre|townhall|library|museum|zoo|theme park|conference centre|exhibition centre|airport|aerodrome|parking)$/;
+
+/**
+ * Order suggestions: names that match what was typed, then complexes
+ * (universities, hospitals, stadiums…), then places with an outline; the
+ * search's own order otherwise. ("ohio state university" -> The Ohio State
+ * University before the university's airport, a dam or a bus stop.)
+ */
+export function rankPlaces(places, text) {
+  const norm = (v) => String(v || "").toLowerCase().replace(/^the\s+/, "").replace(/[^a-z0-9\u00c0-\uffff]+/g, " ").trim();
+  const q = norm(text);
+  const score = (p) => {
+    const n = norm(p.name);
+    const extra = n.startsWith(q) ? n.slice(q.length).trim() : null;
+    return (n === q ? 4 : extra !== null && /^(main campus|campus)?$/.test(extra) ? 4 : extra !== null ? 1 : 0)
+      + (CAMPUS_KIND.test(p.kind) ? 2 : 0) + (p.area ? 1 : 0);
+  };
+  return places.map((p, i) => ({ p, i, s: score(p) })).sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.p);
+}
+
 /**
  * The full address, like a map app: "2799 West Grand Boulevard, Detroit, MI
  * 48202, United States". Parts that are missing are left out; US states are
@@ -107,15 +126,35 @@ const US_STATES = {
 // to download and draw. About 3 x 3 km.
 export const MAX_SPAN_M = 3000;
 export const MIN_SPAN_M = 600;
-export function limitBounds(b) {
-  const lat = (b.minlat + b.maxlat) / 2, lon = (b.minlon + b.maxlon) / 2;
+export function limitBounds(b, centre = null) {
+  // The window's centre: the middle of the area, or for an area too big to
+  // show, the place's own point (kept inside the area).
+  let lat = (b.minlat + b.maxlat) / 2, lon = (b.minlon + b.maxlon) / 2;
   const kx = 111320 * Math.cos((lat * Math.PI) / 180), ky = 111320;
   // At least MIN_SPAN_M across, so a single building comes with its grounds
   // and the parking around it.
   const halfW = Math.max(MIN_SPAN_M, Math.min((b.maxlon - b.minlon) * kx, MAX_SPAN_M)) / 2 / kx;
   const halfH = Math.max(MIN_SPAN_M, Math.min((b.maxlat - b.minlat) * ky, MAX_SPAN_M)) / 2 / ky;
   const limited = halfW * 2 * kx < (b.maxlon - b.minlon) * kx - 1 || halfH * 2 * ky < (b.maxlat - b.minlat) * ky - 1;
+  if (limited && centre && Number.isFinite(centre.lat)) {
+    lat = Math.min(b.maxlat - halfH, Math.max(b.minlat + halfH, centre.lat));
+    lon = Math.min(b.maxlon - halfW, Math.max(b.minlon + halfW, centre.lon));
+  }
   return { bounds: { minlat: lat - halfH, maxlat: lat + halfH, minlon: lon - halfW, maxlon: lon + halfW }, limited };
+}
+
+/**
+ * The bounds of the biggest piece of a place's outline (a university whose
+ * outline also takes in a far-away airport and farms: the main campus).
+ */
+export function mainOutlineBounds(outline, bounds) {
+  const parsed = parseOsm({ elements: [] }, bounds, { outline });
+  const main = parsed.outline.map((p) => ({ p, a: Math.abs(polyArea(p.outer)) })).sort((x, y) => y.a - x.a)[0]?.p;
+  if (!main) return null;
+  const lat0 = (bounds.minlat + bounds.maxlat) / 2, lon0 = (bounds.minlon + bounds.maxlon) / 2;
+  const kx = 111320 * Math.cos((lat0 * Math.PI) / 180), ky = 110540;
+  const xs = main.outer.map((q) => q.x), ys = main.outer.map((q) => q.y);
+  return { minlon: lon0 + Math.min(...xs) / kx, maxlon: lon0 + Math.max(...xs) / kx, minlat: lat0 - Math.max(...ys) / ky, maxlat: lat0 - Math.min(...ys) / ky };
 }
 
 // Abort when the caller aborts or when we give up on this request.

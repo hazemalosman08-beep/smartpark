@@ -533,7 +533,10 @@ export class CampusScene {
 
   fit(snap = false) {
     // The complex itself when it has an outline, else the whole map.
-    const pts = (this.osm.outline || []).flatMap((o) => o.outer);
+    // Only the part of the outline inside the downloaded area (a university
+    // outline can take in an airport and farms far away).
+    const hx = this.half.x, hz = this.half.z;
+    const pts = (this.osm.outline || []).flatMap((o) => o.outer).map((q) => ({ x: Math.max(-hx, Math.min(hx, q.x)), y: Math.max(-hz, Math.min(hz, q.y)) }));
     let cx = 0, cz = 0, w = this.half.x * 1.7, h = this.half.z * 1.7;
     if (pts.length) {
       const xs = pts.map((p) => p.x), zs = pts.map((p) => p.y);
